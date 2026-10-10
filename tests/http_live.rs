@@ -710,3 +710,55 @@ async fn a_failed_store_puts_the_scene_settings_back() {
     .await;
     assert_eq!(now, before, "the scene is back on its old settings");
 }
+
+#[tokio::test]
+async fn scene_settings_are_written_one_request_at_a_time() {
+    let store = common::store().await;
+    store
+        .set_admin_hash(&crypto::hash_password(PASSWORD), 0)
+        .await
+        .unwrap();
+    let (ci, _inputs) = scene::spawn(
+        CiScene::new(CiSettings::default()).unwrap(),
+        Duration::from_secs(1),
+    );
+    let live = Live::new(
+        store,
+        SecretBox::from_base64(&SecretBox::generate_key()).unwrap(),
+        false,
+        Access::Admin,
+        vec![],
+    );
+    let state = Arc::new(AppState {
+        scenes: vec![ci],
+        live: Some(live),
+    });
+    let r = router(state.clone()).layer(MockConnectInfo(SocketAddr::from(([10, 1, 2, 3], 4000))));
+    let (_, _, cookie) = call(
+        &r,
+        "POST",
+        "/api/v1/login",
+        None,
+        Some(json!({ "password": PASSWORD })),
+        &[],
+    )
+    .await;
+    let cookie = cookie.unwrap();
+    let uri = "/api/v1/admin/scenes/ci/settings";
+    let (_, mut next, _) = call(&r, "GET", uri, Some(&cookie), None, &[]).await;
+    next["max_projects"] = json!(3);
+
+    // Another settings write is in progress: this one waits for it.
+    let busy = state.live.as_ref().unwrap().scene_write.lock().await;
+    let waiting = tokio::spawn({
+        let (r, cookie) = (r.clone(), cookie.clone());
+        async move { call(&r, "PUT", uri, Some(&cookie), Some(next), &[]).await }
+    });
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert!(!waiting.is_finished(), "it must not run in parallel");
+    let (_, now, _) = call(&r, "GET", uri, Some(&cookie), None, &[]).await;
+    assert_ne!(now["max_projects"], json!(3), "nothing applied yet");
+    drop(busy);
+    let (status, _, _) = waiting.await.unwrap();
+    assert_eq!(status, StatusCode::OK);
+}

@@ -85,6 +85,8 @@ pub(super) async fn put_scene(
     let Some(h) = s.scene(&id) else {
         return json_error(StatusCode::NOT_FOUND, "no such scene");
     };
+    // Held until the end: a revert must not overwrite another request's successful change.
+    let _serial = live(&s).scene_write.lock().await;
     let previous = h.settings();
     let applied = match h.configure(value).await {
         Ok(applied) => applied,

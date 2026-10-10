@@ -54,6 +54,8 @@ pub struct Live {
     pub sessions: Mutex<SessionCache>,
     /// Caps concurrent password hash/verify runs (each takes about 19 MiB).
     pub argon: Arc<Semaphore>,
+    /// One scene-settings write at a time: configure, store and revert must not interleave.
+    pub scene_write: tokio::sync::Mutex<()>,
 }
 
 impl Live {
@@ -73,6 +75,7 @@ impl Live {
             history,
             sessions: Mutex::new(SessionCache::default()),
             argon: Arc::new(Semaphore::new(ARGON_RUNS)),
+            scene_write: tokio::sync::Mutex::new(()),
         }
     }
 }
