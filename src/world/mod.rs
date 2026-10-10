@@ -1,6 +1,8 @@
 //! The world every scene is described in: places, entities in places, levels
 //! against limits, and the changes between them. Knows nothing about sources.
 
+pub mod bus;
+
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
