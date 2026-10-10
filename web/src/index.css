@@ -43,3 +43,18 @@ svg.scene { display: block; width: 100%; height: auto; }
 .token { stroke: var(--surface); stroke-width: 2; }
 .token.waiting_limit { stroke: var(--warn); stroke-width: 3; }
 .token.oom, .token.failed { stroke: var(--bad); stroke-width: 3; }
+
+.pad { padding: 20px; }
+.card { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 16px 20px; margin: 16px 20px; display: flex; flex-direction: column; gap: 10px; max-width: 720px; }
+.card.narrow { max-width: 380px; margin: 48px auto; }
+.card h2 { font-size: 15px; margin: 0; }
+.card label { display: flex; flex-direction: column; gap: 4px; font-size: 13px; color: var(--muted); }
+.card label.choice { flex-direction: row; align-items: center; gap: 8px; color: var(--text); }
+.card input, .card textarea { font: inherit; color: var(--text); background: var(--bg); border: 1px solid var(--border); border-radius: 6px; padding: 6px 8px; }
+.card button, header button.link { font: inherit; color: var(--text); background: var(--surface-2); border: 1px solid var(--border); border-radius: 6px; padding: 6px 12px; cursor: pointer; align-self: flex-start; }
+header a, header button.link { color: var(--muted); font-size: 13px; text-decoration: none; background: none; border: none; padding: 0; }
+.hint { color: var(--muted); font-size: 13px; margin: 0; }
+.error { color: var(--bad); font-size: 13px; margin: 0; }
+.ok { color: var(--ok); font-size: 13px; }
+.row { display: flex; align-items: center; gap: 12px; }
+.exit { display: grid; grid-template-columns: 1fr 1fr 1fr auto; gap: 8px; }
