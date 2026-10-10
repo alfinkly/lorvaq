@@ -13,6 +13,8 @@ use tokio::sync::broadcast::error::RecvError;
 
 pub const QUEUE_CAP: usize = 10_000;
 pub const BATCH: usize = 500;
+/// One batch write gets this long before it counts as failed.
+pub const WRITE_TIMEOUT: Duration = Duration::from_secs(10);
 pub const HISTORY_KEY: &str = "history";
 const DAY_MS: i64 = 24 * 3600 * 1000;
 
@@ -60,54 +62,103 @@ impl EventSink for Store {
     }
 }
 
+struct Queue {
+    events: VecDeque<Event>,
+    /// Events pushed out by overflow so far; lets a flush see the front move under it.
+    evicted: u64,
+}
+
+/// A bounded queue of events and the code that writes it out. Pushing never waits
+/// for the sink, so the two sides can run in different tasks.
 pub struct Writer<S> {
     sink: S,
     scene: &'static str,
-    queue: VecDeque<Event>,
+    queue: Mutex<Queue>,
     status: Arc<Mutex<HistoryStatus>>,
+    write_timeout: Duration,
 }
 
 impl<S: EventSink> Writer<S> {
     pub fn new(sink: S, scene: &'static str, status: Arc<Mutex<HistoryStatus>>) -> Self {
+        Self::with_timeout(sink, scene, status, WRITE_TIMEOUT)
+    }
+
+    /// Like `new`, with another limit for one batch write.
+    pub fn with_timeout(
+        sink: S,
+        scene: &'static str,
+        status: Arc<Mutex<HistoryStatus>>,
+        write_timeout: Duration,
+    ) -> Self {
         Self {
             sink,
             scene,
-            queue: VecDeque::new(),
+            queue: Mutex::new(Queue {
+                events: VecDeque::new(),
+                evicted: 0,
+            }),
             status,
+            write_timeout,
         }
     }
 
-    pub fn push(&mut self, ev: Event) {
+    pub fn push(&self, ev: Event) {
+        let mut q = self.queue.lock().expect(LOCK);
         let mut st = self.status.lock().expect(LOCK);
-        if self.queue.len() == QUEUE_CAP {
-            self.queue.pop_front();
+        if q.events.len() == QUEUE_CAP {
+            q.events.pop_front();
+            q.evicted += 1;
             st.dropped += 1;
         }
-        self.queue.push_back(ev);
-        st.queued = self.queue.len();
+        q.events.push_back(ev);
+        st.queued = q.events.len();
     }
 
     /// Events the bus dropped before we could read them.
-    pub fn lost(&mut self, n: u64) {
+    pub fn lost(&self, n: u64) {
         self.status.lock().expect(LOCK).dropped += n;
     }
 
-    /// Writes the queue in batches. False when the sink failed; the rest stays queued.
-    pub async fn flush(&mut self) -> bool {
-        while !self.queue.is_empty() {
-            let n = self.queue.len().min(BATCH);
-            let batch: Vec<Event> = self.queue.iter().take(n).cloned().collect();
-            let result = self.sink.write(self.scene, &batch).await;
-            let mut st = self.status.lock().expect(LOCK);
-            match result {
-                Ok(()) => {
-                    self.queue.drain(..n);
-                    st.written += n as u64;
-                    st.queued = self.queue.len();
+    fn fail(&self, message: String) -> bool {
+        self.status.lock().expect(LOCK).last_error = Some(message);
+        false
+    }
+
+    /// Writes the queue in batches, each within the write timeout. False when the sink
+    /// failed or timed out (recorded in `last_error`); the rest stays queued.
+    pub async fn flush(&self) -> bool {
+        loop {
+            let (batch, evicted_before) = {
+                let q = self.queue.lock().expect(LOCK);
+                if q.events.is_empty() {
+                    break;
                 }
-                Err(e) => {
-                    st.last_error = Some(format!("{e:#}"));
-                    return false;
+                let n = q.events.len().min(BATCH);
+                (
+                    q.events.iter().take(n).cloned().collect::<Vec<_>>(),
+                    q.evicted,
+                )
+            };
+            let n = batch.len();
+            let result =
+                tokio::time::timeout(self.write_timeout, self.sink.write(self.scene, &batch)).await;
+            match result {
+                Ok(Ok(())) => {
+                    let mut q = self.queue.lock().expect(LOCK);
+                    // Overflow may have removed some of this batch from the front meanwhile.
+                    let pushed_out = (q.evicted - evicted_before) as usize;
+                    let remove = n.saturating_sub(pushed_out).min(q.events.len());
+                    q.events.drain(..remove);
+                    let mut st = self.status.lock().expect(LOCK);
+                    st.written += n as u64;
+                    st.queued = q.events.len();
+                }
+                Ok(Err(e)) => return self.fail(format!("{e:#}")),
+                Err(_) => {
+                    return self.fail(format!(
+                        "writing history timed out after {} s",
+                        self.write_timeout.as_secs_f32()
+                    ))
                 }
             }
         }
@@ -116,38 +167,54 @@ impl<S: EventSink> Writer<S> {
     }
 }
 
-/// Follows a scene's bus and writes its events, once a second.
+/// Follows a scene's bus into the queue and, in a second task, writes the queue once
+/// a second. The receiving side never waits for the database, so a hanging database
+/// cannot make the bus drop events before they reach the bounded queue.
 pub fn spawn_writer(store: Store, scene: SceneHandle, status: Arc<Mutex<HistoryStatus>>) {
+    // Subscribe first, then take what the bus already holds: the scene may
+    // have published before these tasks started.
+    let mut rx = scene.bus.subscribe();
+    let writer = Arc::new(Writer::new(store, scene.id, status));
+    let mut written_up_to = 0;
+    for ev in scene.bus.since(0).unwrap_or_default() {
+        written_up_to = ev.seq;
+        writer.push(ev);
+    }
+    let (done_tx, mut done_rx) = tokio::sync::watch::channel(false);
+    let receiving = writer.clone();
     tokio::spawn(async move {
-        // Subscribe first, then take what the bus already holds: the scene may
-        // have published before this task started.
-        let mut rx = scene.bus.subscribe();
-        let mut writer = Writer::new(store, scene.id, status);
-        let mut written_up_to = 0;
-        for ev in scene.bus.since(0).unwrap_or_default() {
-            written_up_to = ev.seq;
-            writer.push(ev);
+        loop {
+            match rx.recv().await {
+                Ok(ev) if ev.seq > written_up_to => receiving.push(ev),
+                Ok(_) => {}
+                Err(RecvError::Lagged(n)) => receiving.lost(n),
+                Err(RecvError::Closed) => break,
+            }
         }
+        let _ = done_tx.send(true);
+    });
+    tokio::spawn(async move {
         let mut every = tokio::time::interval(Duration::from_secs(1));
+        every.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         let mut healthy = true;
         loop {
             tokio::select! {
-                received = rx.recv() => match received {
-                    Ok(ev) if ev.seq > written_up_to => writer.push(ev),
-                    Ok(_) => {}
-                    Err(RecvError::Lagged(n)) => writer.lost(n),
-                    Err(RecvError::Closed) => break,
-                },
-                _ = every.tick() => {
-                    let ok = writer.flush().await;
-                    if ok != healthy {
-                        healthy = ok;
-                        if ok {
-                            tracing::info!(scene = scene.id, "history is written again");
-                        } else {
-                            tracing::warn!(scene = scene.id, "cannot write history; events wait in memory");
-                        }
-                    }
+                _ = every.tick() => {}
+                _ = done_rx.changed() => {
+                    writer.flush().await;
+                    break;
+                }
+            }
+            let ok = writer.flush().await;
+            if ok != healthy {
+                healthy = ok;
+                if ok {
+                    tracing::info!(scene = scene.id, "history is written again");
+                } else {
+                    tracing::warn!(
+                        scene = scene.id,
+                        "cannot write history; events wait in memory"
+                    );
                 }
             }
         }
@@ -231,7 +298,7 @@ mod tests {
 
     #[tokio::test]
     async fn writes_in_batches_and_empties_the_queue() {
-        let (mut w, sink, status) = writer();
+        let (w, sink, status) = writer();
         for seq in 1..=1_200 {
             w.push(ev(seq));
         }
@@ -244,7 +311,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_failing_database_keeps_events_in_order_until_it_is_back() {
-        let (mut w, sink, status) = writer();
+        let (w, sink, status) = writer();
         sink.down.store(true, Ordering::SeqCst);
         w.push(ev(1));
         w.push(ev(2));
@@ -266,7 +333,7 @@ mod tests {
 
     #[tokio::test]
     async fn overflow_drops_the_oldest_and_counts_them() {
-        let (mut w, sink, status) = writer();
+        let (w, sink, status) = writer();
         for seq in 1..=(QUEUE_CAP as u64 + 3) {
             w.push(ev(seq));
         }
@@ -275,6 +342,85 @@ mod tests {
         assert!(w.flush().await);
         let all = sink.seen.lock().unwrap().concat();
         assert_eq!((all.len(), all[0]), (QUEUE_CAP, 4));
+    }
+
+    struct HangingSink;
+
+    impl EventSink for HangingSink {
+        async fn write(&self, _scene: &str, _events: &[Event]) -> anyhow::Result<()> {
+            std::future::pending().await
+        }
+    }
+
+    #[tokio::test]
+    async fn a_hanging_sink_times_out_with_an_error_and_pushing_goes_on() {
+        let status = Arc::new(Mutex::new(HistoryStatus::default()));
+        let w = Arc::new(Writer::with_timeout(
+            HangingSink,
+            "ci",
+            status.clone(),
+            Duration::from_millis(100),
+        ));
+        w.push(ev(1));
+        let flushing = tokio::spawn({
+            let w = w.clone();
+            async move { w.flush().await }
+        });
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        w.push(ev(2)); // the flush is still waiting for the sink
+        assert_eq!(status.lock().unwrap().queued, 2);
+        let ok = tokio::time::timeout(Duration::from_secs(2), flushing)
+            .await
+            .expect("the flush gives up within the timeout")
+            .unwrap();
+        assert!(!ok);
+        let st = status.lock().unwrap().clone();
+        assert!(
+            st.last_error.as_deref().unwrap().contains("timed out"),
+            "{st:?}"
+        );
+        assert_eq!((st.queued, st.written), (2, 0), "nothing is lost");
+    }
+
+    #[tokio::test]
+    async fn overflow_during_a_write_does_not_drop_the_wrong_events() {
+        // The sink fills the queue past its cap while the first batch is being written.
+        #[derive(Default)]
+        struct PushingSink {
+            writer: std::sync::OnceLock<Arc<Writer<Arc<PushingSink>>>>,
+            seen: Mutex<Vec<u64>>,
+        }
+        impl EventSink for Arc<PushingSink> {
+            async fn write(&self, _scene: &str, events: &[Event]) -> anyhow::Result<()> {
+                if events[0].seq == 1 {
+                    let w = self.writer.get().unwrap();
+                    for seq in 20_000..20_000 + BATCH as u64 {
+                        w.push(ev(seq));
+                    }
+                }
+                self.seen
+                    .lock()
+                    .unwrap()
+                    .extend(events.iter().map(|e| e.seq));
+                Ok(())
+            }
+        }
+        let status = Arc::new(Mutex::new(HistoryStatus::default()));
+        let sink = Arc::new(PushingSink::default());
+        let w = Arc::new(Writer::new(sink.clone(), "ci", status.clone()));
+        sink.writer.set(w.clone()).ok();
+        for seq in 1..=QUEUE_CAP as u64 {
+            w.push(ev(seq));
+        }
+        assert!(w.flush().await);
+        let seen = sink.seen.lock().unwrap().clone();
+        // The first batch went out; the 500 oldest queued events were pushed out by the
+        // overflow, so the flush continues with 501.. and neither repeats nor skips.
+        let expected: Vec<u64> = (1..=QUEUE_CAP as u64)
+            .chain(20_000..20_000 + BATCH as u64)
+            .collect();
+        assert_eq!(seen, expected);
+        assert_eq!(status.lock().unwrap().queued, 0);
     }
 
     #[test]
