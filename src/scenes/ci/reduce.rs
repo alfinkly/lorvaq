@@ -576,6 +576,18 @@ impl Scene for CiScene {
         "CI"
     }
 
+    fn settings(&self) -> serde_json::Value {
+        serde_json::to_value(&self.settings).expect("settings always serialize")
+    }
+
+    fn configure(&mut self, settings: serde_json::Value) -> anyhow::Result<()> {
+        let settings: CiSettings = serde_json::from_value(settings)?;
+        let exits = settings.compile_exits()?;
+        self.settings = settings;
+        self.exits = exits;
+        Ok(())
+    }
+
     fn reduce(&mut self, world: &World, input: CiInput, now_ms: i64) -> Vec<Change> {
         let mut out = self.ensure_static(world);
         match input {
@@ -1207,5 +1219,28 @@ mod tests {
         h.feed(CiInput::Agent(report));
         let disk = h.world.level("host:box", "disk").unwrap();
         assert_eq!((disk.value, disk.max), (30.0, Some(100.0)));
+    }
+
+    #[test]
+    fn configure_keeps_jobs_adds_exits_and_rejects_bad_patterns() {
+        let mut h = Harness::new(CiSettings::default());
+        h.feed(jobs(vec![job(1, "g/app", JobStatus::Pending, &[])], vec![]));
+        assert_eq!(h.scene.settings()["max_projects"], serde_json::json!(8));
+        h.scene
+            .configure(serde_json::json!({ "exits": [{ "label": "prod", "stage": "deploy" }] }))
+            .unwrap();
+        h.tick(0);
+        assert!(
+            h.world.place("exit:prod").is_some(),
+            "the new exit appears on the next tick"
+        );
+        assert!(h.place_of(1).is_some(), "the world is kept");
+        let bad = serde_json::json!({ "exits": [{ "label": "x", "stage": "(" }] });
+        assert!(h.scene.configure(bad).is_err());
+        assert_eq!(
+            h.scene.settings()["exits"][0]["label"],
+            serde_json::json!("prod"),
+            "old settings stay"
+        );
     }
 }
