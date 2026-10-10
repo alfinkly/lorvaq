@@ -54,4 +54,19 @@ describe("follow", () => {
     sub.close();
     expect(FakeEventSource.opened[0].closed).toBe(true);
   });
+
+  test("a 401 on the snapshot reports locked and stops", async () => {
+    let calls = 0;
+    vi.stubGlobal("fetch", async () => {
+      calls += 1;
+      return { ok: false, status: 401, json: async () => ({ error: "sign in" }) };
+    });
+    vi.stubGlobal("EventSource", FakeEventSource);
+    const statuses: string[] = [];
+    follow("ci", () => {}, (s) => statuses.push(s));
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(statuses).toEqual(["locked"]);
+    expect(calls).toBe(1);
+    expect(FakeEventSource.opened).toHaveLength(0);
+  });
 });

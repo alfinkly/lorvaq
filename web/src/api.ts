@@ -3,28 +3,91 @@ import type { SceneInfo, Snapshot, WorldEvent } from "./types";
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
-async function getJson<T>(url: string): Promise<T> {
-  const res = await fetch(url);
-  if (!res.ok) throw new Error(`${url}: ${res.status}`);
-  return (await res.json()) as T;
+/** 401: the viewer or admin has to sign in. */
+export class AuthError extends Error {
+  constructor() {
+    super("sign in required");
+  }
+}
+
+export class ApiError extends Error {
+  constructor(readonly status: number, message: string) {
+    super(message);
+  }
+}
+
+async function request<T>(method: string, url: string, body?: unknown): Promise<T> {
+  const res = await fetch(url, {
+    method,
+    headers: body === undefined ? undefined : { "Content-Type": "application/json" },
+    body: body === undefined ? undefined : JSON.stringify(body),
+  });
+  if (res.status === 401) throw new AuthError();
+  const data: unknown = await res.json().catch(() => null);
+  if (!res.ok) {
+    const message = (data as { error?: string } | null)?.error ?? `${method} ${url}: ${res.status}`;
+    throw new ApiError(res.status, message);
+  }
+  return data as T;
+}
+
+const getJson = <T>(url: string) => request<T>("GET", url);
+
+export interface Me {
+  demo: boolean;
+  setup_needed: boolean;
+  admin: boolean;
+  viewer: boolean;
+}
+
+export type Access = { mode: "open" } | { mode: "admin" } | { mode: "proxy"; header: string; trusted: string[] };
+
+export interface HistoryInfo {
+  retention_days: number;
+  scenes: { id: string; queued: number; dropped: number; written: number; last_error: string | null }[];
+}
+
+export interface ExitRule {
+  label: string;
+  stage?: string | null;
+  name?: string | null;
+}
+
+/** The fields the settings page edits; the rest is sent back untouched. */
+export interface CiSettings {
+  exits: ExitRule[];
+  max_projects: number;
+  default_capacity: number;
+  capacities: Record<string, number>;
+  [key: string]: unknown;
 }
 
 export const fetchScenes = () => getJson<SceneInfo[]>("/api/v1/scenes");
 export const fetchSnapshot = (id: string) => getJson<Snapshot>(`/api/v1/scenes/${encodeURIComponent(id)}/snapshot`);
+export const fetchMe = () => getJson<Me>("/api/v1/me");
+export const setup = (code: string, password: string) => request<{ ok: true }>("POST", "/api/v1/setup", { code, password });
+export const login = (password: string) => request<{ ok: true }>("POST", "/api/v1/login", { password });
+export const logout = () => request<{ ok: true }>("POST", "/api/v1/logout");
+export const changePassword = (current: string, next: string) => request<{ ok: true }>("POST", "/api/v1/admin/password", { current, new: next });
+export const getAccess = () => getJson<Access>("/api/v1/admin/access");
+export const putAccess = (access: Access) => request<Access>("PUT", "/api/v1/admin/access", access);
+export const getHistory = () => getJson<HistoryInfo>("/api/v1/admin/history");
+export const putHistory = (retention_days: number) => request<{ retention_days: number }>("PUT", "/api/v1/admin/history", { retention_days });
+export const getSceneSettings = <T>(id: string) => getJson<T>(`/api/v1/admin/scenes/${encodeURIComponent(id)}/settings`);
+export const putSceneSettings = <T>(id: string, settings: T) => request<T>("PUT", `/api/v1/admin/scenes/${encodeURIComponent(id)}/settings`, settings);
 
 export interface Subscription {
   close(): void;
 }
 
+export type FollowStatus = "live" | "reconnecting" | "locked";
+
 /**
  * Keeps a world in sync: snapshot, then events after its seq. Any break —
- * network, server restart, 410 for a gap — means a fresh snapshot.
+ * network, server restart, 410 for a gap — means a fresh snapshot. A 401 means
+ * the viewer must sign in: report "locked" and stop.
  */
-export function follow(
-  sceneId: string,
-  onWorld: (world: ClientWorld, effects: Effect[]) => void,
-  onStatus: (status: "live" | "reconnecting") => void,
-): Subscription {
+export function follow(sceneId: string, onWorld: (world: ClientWorld, effects: Effect[]) => void, onStatus: (status: FollowStatus) => void): Subscription {
   let closed = false;
   let source: EventSource | null = null;
   let streamDone: (() => void) | null = null;
@@ -53,7 +116,11 @@ export function follow(
         const world = ClientWorld.fromSnapshot(snapshot);
         onWorld(world, []);
         await stream(world);
-      } catch {
+      } catch (e) {
+        if (e instanceof AuthError) {
+          onStatus("locked");
+          return;
+        }
         // Server unreachable: retry below.
       }
       if (!closed) {

@@ -4,7 +4,7 @@ import { t } from "./i18n";
 import type { SceneInfo } from "./types";
 import { CiView } from "./scenes/ci/CiView";
 
-type Status = "connecting" | "live" | "reconnecting" | "offline";
+type Status = "connecting" | "live" | "reconnecting" | "offline" | "locked";
 
 export function App() {
   const [scenes, setScenes] = useState<SceneInfo[]>([]);

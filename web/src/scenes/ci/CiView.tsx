@@ -3,7 +3,7 @@ import { follow } from "../../api";
 import { CiRenderer } from "./renderer";
 
 interface Props {
-  onStatus: (status: "live" | "reconnecting") => void;
+  onStatus: (status: "live" | "reconnecting" | "locked") => void;
   onStale: (stale: Record<string, number>) => void;
 }
 
