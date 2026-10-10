@@ -21,9 +21,12 @@ Open http://localhost:8080.
 lorvaq keeps its history and settings in Postgres. Create `.env` next to
 `compose.yml`:
 
-    POSTGRES_PASSWORD=<any long password>
+    POSTGRES_PASSWORD=<output of: openssl rand -hex 24>
     LORVAQ_SECRET_KEY=<output of: openssl rand -base64 32, or lorvaq keygen>
     LORVAQ_PUBLIC_URL=https://lorvaq.example.com   # optional; https turns on Secure cookies
+
+The database password goes into a URL, so keep it URL-safe: hex digits, as
+`openssl rand -hex 24` prints, not `-base64` (its `/` and `+` break the URL).
 
 Then:
 

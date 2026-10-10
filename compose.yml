@@ -1,11 +1,12 @@
 # lorvaq with its database. Put two values into .env next to this file:
-#   POSTGRES_PASSWORD=<any long password>
+#   POSTGRES_PASSWORD=<output of: openssl rand -hex 24>   (hex only: it goes into a URL)
 #   LORVAQ_SECRET_KEY=<output of: openssl rand -base64 32>
 # Then: docker compose up -d --build, and read the one-time setup code with:
 #   docker compose logs lorvaq | grep "setup code"
 services:
   db:
     image: postgres:17-alpine
+    restart: unless-stopped
     environment:
       POSTGRES_USER: lorvaq
       POSTGRES_DB: lorvaq
@@ -21,6 +22,7 @@ services:
   lorvaq:
     build: .
     image: lorvaq:dev
+    restart: unless-stopped
     command: ["server", "--listen", "0.0.0.0:8080"]
     environment:
       DATABASE_URL: postgres://lorvaq:${POSTGRES_PASSWORD}@db:5432/lorvaq
