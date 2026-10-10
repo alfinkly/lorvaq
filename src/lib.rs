@@ -2,6 +2,7 @@ pub mod app;
 pub mod cli;
 pub mod crypto;
 pub mod demo;
+pub mod history;
 pub mod http;
 pub mod scene;
 pub mod scenes;
