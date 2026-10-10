@@ -193,16 +193,16 @@ export class CiRenderer {
       tk.x = tk.fromX + (tk.toX - tk.fromX) * ease(p);
       tk.y = tk.fromY + (tk.toY - tk.fromY) * ease(p);
       set(tk.el, { cx: tk.x, cy: tk.y });
-      let opacity = tk.hidden ? 0 : 1;
+      let fade = 1;
       if (tk.fadeStart !== null) {
-        opacity = Math.max(0, 1 - (now - tk.fadeStart) / FADE_MS);
-        if (opacity === 0) {
+        fade = Math.max(0, 1 - (now - tk.fadeStart) / FADE_MS);
+        if (fade === 0) {
           tk.el.remove();
           this.tokens.delete(id);
           continue;
         }
       }
-      tk.el.style.opacity = String(opacity);
+      tk.el.style.opacity = String(tk.hidden ? 0 : fade);
     }
     for (const [id, until] of this.flashes) {
       if (until <= now) {
