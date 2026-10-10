@@ -1,0 +1,45 @@
+:root {
+  --bg: #fbfbfa;
+  --surface: #ffffff;
+  --surface-2: #f3f2ee;
+  --text: #1a1a19;
+  --muted: #6b6a66;
+  --border: #dedcd5;
+  --ok: #1baf7a;
+  --warn: #eda100;
+  --bad: #e34948;
+  color-scheme: light dark;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #141413;
+    --surface: #1d1d1b;
+    --surface-2: #262624;
+    --text: #f0efec;
+    --muted: #9c9a92;
+    --border: #3a3936;
+  }
+}
+body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.4 system-ui, sans-serif; }
+header { display: flex; align-items: center; gap: 16px; padding: 10px 20px; border-bottom: 1px solid var(--border); }
+header h1 { font-size: 16px; margin: 0; }
+.tabs button { background: none; border: 1px solid var(--border); border-radius: 6px; padding: 4px 10px; color: var(--text); cursor: pointer; }
+.tabs button.on { background: var(--surface-2); }
+.status { margin-left: auto; color: var(--muted); font-size: 13px; }
+.banner { background: color-mix(in srgb, var(--warn) 18%, transparent); padding: 8px 20px; font-size: 13px; }
+svg.scene { display: block; width: 100%; height: auto; }
+.place > rect:first-child { fill: var(--surface); stroke: var(--border); }
+.place.zone > rect:first-child, .place.host > rect:first-child { fill: var(--surface-2); }
+.place.stuck > rect:first-child { fill: color-mix(in srgb, var(--bad) 8%, var(--surface)); stroke: var(--bad); stroke-dasharray: 5 4; }
+.place.slot > rect:first-child { fill: var(--bg); }
+.place .fill { opacity: 0.35; stroke: none; }
+.place .fill.oom { fill: var(--bad) !important; opacity: 0.6; }
+.place.flash > rect:first-child { fill: color-mix(in srgb, var(--bad) 30%, var(--surface)); stroke: var(--bad); }
+.place.offline { opacity: 0.5; }
+.label { fill: var(--text); font-size: 12px; font-weight: 600; }
+.extra { fill: var(--muted); font-size: 11px; text-anchor: end; }
+.title { fill: var(--muted); font-size: 12px; }
+.wall { stroke: var(--muted); stroke-width: 2; }
+.token { stroke: var(--surface); stroke-width: 2; }
+.token.waiting_limit { stroke: var(--warn); stroke-width: 3; }
+.token.oom, .token.failed { stroke: var(--bad); stroke-width: 3; }
