@@ -138,7 +138,7 @@ impl Simulator {
     }
 
     fn spawn(&mut self, now: i64) {
-        if !self.rng.random_bool(0.55) {
+        if !self.rng.random_bool(0.35) {
             return;
         }
         let total: u32 = PROJECTS.iter().map(|(_, w)| w).sum();
