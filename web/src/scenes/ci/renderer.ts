@@ -156,6 +156,7 @@ export class CiRenderer {
 
   private placeTokens(w: ClientWorld, layout: Layout, now: number): void {
     for (const [id, tk] of this.tokens) if (!w.entities.has(id) && tk.fadeStart === null) tk.fadeStart = now;
+    for (const id of this.births.keys()) if (!w.entities.has(id)) this.births.delete(id);
     for (const e of w.entities.values()) {
       const spot = layout.tokens.get(e.id);
       let tk = this.tokens.get(e.id);
