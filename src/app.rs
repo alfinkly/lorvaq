@@ -17,7 +17,7 @@ pub fn demo_scenes() -> anyhow::Result<Vec<SceneHandle>> {
 }
 
 pub async fn serve(listen: SocketAddr, scenes: Vec<SceneHandle>) -> anyhow::Result<()> {
-    let app = router(Arc::new(AppState { scenes }));
+    let app = router(Arc::new(AppState::demo(scenes)));
     let listener = tokio::net::TcpListener::bind(listen).await?;
     tracing::info!(%listen, "lorvaq is listening");
     let signal = shutdown_signal().shared();

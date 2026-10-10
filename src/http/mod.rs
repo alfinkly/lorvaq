@@ -1,40 +1,88 @@
-//! HTTP: scene list, snapshots, the live event stream (SSE), and the built-in UI.
+//! HTTP: scenes (behind the viewer guard), sign-in, admin settings (behind the
+//! admin guard), and the built-in UI.
 
+mod account;
+mod admin;
+mod guard;
 mod static_files;
 
+use crate::auth::{Access, LoginLimiter};
+use crate::crypto::SecretBox;
+use crate::history::HistoryStatus;
 use crate::scene::SceneHandle;
+use crate::store::Store;
 use crate::world::bus::Gap;
 use crate::world::Event;
 use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
+use axum::middleware;
 use axum::response::sse::{Event as SseEvent, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
-use axum::routing::get;
+use axum::routing::{get, post};
 use axum::{Json, Router};
 use futures::StreamExt;
 use serde::Deserialize;
 use serde_json::{json, Value};
 use std::convert::Infallible;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
 use tokio_stream::wrappers::BroadcastStream;
 
 pub struct AppState {
     pub scenes: Vec<SceneHandle>,
+    /// None in demo mode: no database, no admin, everything open.
+    pub live: Option<Live>,
+}
+
+pub struct Live {
+    pub store: Store,
+    /// Encrypts source credentials (used from plan 3 on).
+    pub secrets: SecretBox,
+    pub cookie_secure: bool,
+    pub access: RwLock<Access>,
+    pub limiter: Mutex<LoginLimiter>,
+    pub history: Vec<(&'static str, Arc<Mutex<HistoryStatus>>)>,
 }
 
 impl AppState {
+    pub fn demo(scenes: Vec<SceneHandle>) -> Self {
+        Self { scenes, live: None }
+    }
+
     fn scene(&self, id: &str) -> Option<&SceneHandle> {
         self.scenes.iter().find(|s| s.id == id)
     }
 }
 
 pub fn router(state: Arc<AppState>) -> Router {
-    Router::new()
-        .route("/healthz", get(healthz))
+    let viewer = Router::new()
         .route("/api/v1/scenes", get(list_scenes))
         .route("/api/v1/scenes/{id}/snapshot", get(snapshot))
         .route("/api/v1/scenes/{id}/events", get(events))
+        .route_layer(middleware::from_fn_with_state(state.clone(), guard::viewer));
+    let admin = Router::new()
+        .route(
+            "/api/v1/admin/access",
+            get(admin::get_access).put(admin::put_access),
+        )
+        .route(
+            "/api/v1/admin/history",
+            get(admin::get_history).put(admin::put_history),
+        )
+        .route(
+            "/api/v1/admin/scenes/{id}/settings",
+            get(admin::get_scene).put(admin::put_scene),
+        )
+        .route("/api/v1/admin/password", post(account::change_password))
+        .route_layer(middleware::from_fn_with_state(state.clone(), guard::admin));
+    Router::new()
+        .route("/healthz", get(healthz))
+        .route("/api/v1/me", get(account::me))
+        .route("/api/v1/setup", post(account::setup))
+        .route("/api/v1/login", post(account::login))
+        .route("/api/v1/logout", post(account::logout))
+        .merge(viewer)
+        .merge(admin)
         .fallback(static_files::serve)
         .with_state(state)
 }
@@ -45,7 +93,11 @@ async fn healthz(State(s): State<Arc<AppState>>) -> Json<Value> {
         .iter()
         .map(|h| json!({ "id": h.id, "stale": h.snapshot().stale }))
         .collect();
-    Json(json!({ "status": "ok", "scenes": scenes }))
+    let db = match &s.live {
+        Some(live) => json!(live.store.ping().await),
+        None => Value::Null,
+    };
+    Json(json!({ "status": "ok", "db": db, "scenes": scenes }))
 }
 
 async fn list_scenes(State(s): State<Arc<AppState>>) -> Json<Value> {
@@ -119,12 +171,7 @@ mod tests {
 
     fn app(cap: usize) -> (Router, SceneHandle) {
         let h = SceneHandle::new("test", "Test", cap);
-        (
-            router(Arc::new(AppState {
-                scenes: vec![h.clone()],
-            })),
-            h,
-        )
+        (router(Arc::new(AppState::demo(vec![h.clone()]))), h)
     }
 
     fn zone(id: &str) -> Change {
@@ -198,7 +245,34 @@ mod tests {
         );
         let (status, body) = get(&app, "/healthz").await;
         assert_eq!(status, StatusCode::OK);
-        assert!(body.contains(r#""status":"ok""#), "{body}");
+        let health: Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(
+            (health["status"].as_str(), health["db"].clone()),
+            (Some("ok"), Value::Null)
+        );
+    }
+
+    #[tokio::test]
+    async fn demo_mode_is_open_and_has_no_admin() {
+        let (app, _) = app(10);
+        let (status, body) = get(&app, "/api/v1/me").await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(
+            serde_json::from_str::<Value>(&body).unwrap(),
+            json!({"demo": true, "setup_needed": false, "admin": false, "viewer": true})
+        );
+        assert_eq!(
+            get(&app, "/api/v1/admin/access").await.0,
+            StatusCode::NOT_FOUND
+        );
+        let req = Request::post("/api/v1/login")
+            .header("content-type", "application/json")
+            .body(Body::from(r#"{"password":"x"}"#))
+            .unwrap();
+        assert_eq!(
+            app.clone().oneshot(req).await.unwrap().status(),
+            StatusCode::NOT_FOUND
+        );
     }
 
     #[tokio::test]
