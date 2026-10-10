@@ -10,9 +10,30 @@ the runner agent, history and settings come next.
 
 ## Try it
 
+On simulated data, no database:
+
     docker compose -f compose.demo.yml up --build
 
 Open http://localhost:8080.
+
+## Run it
+
+lorvaq keeps its history and settings in Postgres. Create `.env` next to
+`compose.yml`:
+
+    POSTGRES_PASSWORD=<any long password>
+    LORVAQ_SECRET_KEY=<output of: openssl rand -base64 32, or lorvaq keygen>
+    LORVAQ_PUBLIC_URL=https://lorvaq.example.com   # optional; https turns on Secure cookies
+
+Then:
+
+    docker compose up -d --build
+    docker compose logs lorvaq | grep "setup code"
+
+Open lorvaq, enter the one-time setup code and choose the admin password. In
+Settings decide who sees the scenes: anyone, people your reverse proxy signed
+in, or only the admin. Lost the password? `docker compose exec lorvaq /lorvaq
+admin reset-password` prints a new setup code and signs everybody out.
 
 ## Develop
 

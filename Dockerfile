@@ -13,6 +13,7 @@ WORKDIR /src
 # rust-toolchain.toml is left out on purpose: the image already has 1.91.
 COPY Cargo.toml Cargo.lock ./
 COPY src ./src
+COPY migrations ./migrations
 COPY --from=web /web/dist ./web/dist
 RUN cargo build --release --locked
 
