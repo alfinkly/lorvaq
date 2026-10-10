@@ -521,6 +521,71 @@ async fn changing_the_password_signs_other_sessions_out() {
 }
 
 #[tokio::test]
+async fn overlong_passwords_are_refused_before_any_work() {
+    let (r, _, cookie) = signed_in(Access::Admin).await;
+    let long = "x".repeat(1025);
+    let exact = "y".repeat(1024);
+    // Six attempts would use the limiter up (and a setup would say 409) if they were counted.
+    for _ in 0..6 {
+        let (status, body, _) = call(
+            &r,
+            "POST",
+            "/api/v1/login",
+            None,
+            Some(json!({ "password": long })),
+            &[],
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "login: {body}");
+        let (status, body, _) = call(
+            &r,
+            "POST",
+            "/api/v1/setup",
+            None,
+            Some(json!({ "code": "WRONG", "password": long })),
+            &[],
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "setup: {body}");
+    }
+    let (status, _, _) = call(
+        &r,
+        "POST",
+        "/api/v1/login",
+        None,
+        Some(json!({ "password": PASSWORD })),
+        &[],
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "the limiter was not touched");
+    for body in [
+        json!({ "current": PASSWORD, "new": long }),
+        json!({ "current": long, "new": exact }),
+    ] {
+        let (status, _, _) = call(
+            &r,
+            "POST",
+            "/api/v1/admin/password",
+            Some(&cookie),
+            Some(body),
+            &[],
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+    }
+    let (status, _, _) = call(
+        &r,
+        "POST",
+        "/api/v1/admin/password",
+        Some(&cookie),
+        Some(json!({ "current": PASSWORD, "new": exact })),
+        &[],
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "1024 characters are fine");
+}
+
+#[tokio::test]
 async fn parallel_wrong_logins_are_counted_before_they_are_checked() {
     let (r, _, _) = signed_in(Access::Admin).await;
     let attempts = (0..10).map(|_| {

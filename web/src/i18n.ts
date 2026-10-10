@@ -26,6 +26,7 @@ export const t = {
   settings: "Settings",
   scenes: "Scenes",
   passwordTooShort: (n: number) => `Use at least ${n} characters`,
+  passwordTooLong: (n: number) => `Use at most ${n} characters`,
   passwordMismatch: "The passwords don't match",
   // settings
   save: "Save",

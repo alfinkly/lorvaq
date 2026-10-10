@@ -2,11 +2,13 @@ import type { Access, ExitRule } from "../api";
 import { t } from "../i18n";
 
 export const MIN_PASSWORD = 12;
+export const MAX_PASSWORD = 1024;
 const HEADER = /^[A-Za-z0-9-]+$/;
 const NETWORK = /^[0-9A-Fa-f:.]+(\/\d{1,3})?$/;
 
 export function passwordProblem(password: string, confirm: string): string | null {
   if ([...password].length < MIN_PASSWORD) return t.passwordTooShort(MIN_PASSWORD);
+  if ([...password].length > MAX_PASSWORD) return t.passwordTooLong(MAX_PASSWORD);
   if (password !== confirm) return t.passwordMismatch;
   return null;
 }

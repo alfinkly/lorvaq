@@ -20,6 +20,8 @@ use std::time::Instant;
 use tokio::sync::Semaphore;
 
 pub const MIN_PASSWORD: usize = 12;
+/// Longer passwords are refused up front: hashing one costs time and memory for nothing.
+pub const MAX_PASSWORD: usize = 1024;
 const SESSION_TTL_MS: i64 = 30 * 24 * 3600 * 1000;
 
 #[derive(Deserialize)]
@@ -44,6 +46,18 @@ fn short_password() -> Response {
         StatusCode::BAD_REQUEST,
         &format!("the password needs at least {MIN_PASSWORD} characters"),
     )
+}
+
+fn long_password() -> Response {
+    json_error(
+        StatusCode::BAD_REQUEST,
+        &format!("the password can have at most {MAX_PASSWORD} characters"),
+    )
+}
+
+fn too_long(password: &str) -> bool {
+    // A byte count above 4x the limit cannot fit in MAX_PASSWORD characters: skip the scan.
+    password.len() > MAX_PASSWORD * 4 || password.chars().count() > MAX_PASSWORD
 }
 
 /// Runs slow, memory-hungry work on the blocking pool; at most `ARGON_RUNS` run at once, the rest wait.
@@ -154,6 +168,9 @@ pub(super) async fn setup(
     let Some(live) = &s.live else {
         return json_error(StatusCode::NOT_FOUND, "demo mode has no admin");
     };
+    if too_long(&body.password) {
+        return long_password();
+    }
     let (key, now) = (limiter_key(live, peer, &headers), now_ms());
     if !live.limiter.lock().expect(LOCK).try_begin(key, now) {
         return too_many_attempts();
@@ -205,6 +222,9 @@ pub(super) async fn login(
     let Some(live) = &s.live else {
         return json_error(StatusCode::NOT_FOUND, "demo mode has no admin");
     };
+    if too_long(&body.password) {
+        return long_password();
+    }
     let (key, now) = (limiter_key(live, peer, &headers), now_ms());
     if !live.limiter.lock().expect(LOCK).try_begin(key, now) {
         return too_many_attempts();
@@ -253,6 +273,9 @@ pub(super) async fn change_password(
         .live
         .as_ref()
         .expect("the admin guard lets only live requests in");
+    if too_long(&body.current) || too_long(&body.new) {
+        return long_password();
+    }
     if body.new.chars().count() < MIN_PASSWORD {
         return short_password();
     }

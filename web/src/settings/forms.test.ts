@@ -6,6 +6,9 @@ describe("forms", () => {
     expect(passwordProblem("short", "short")).toMatch(/12/);
     expect(passwordProblem("a long enough one", "a long enough two")).toMatch(/match/);
     expect(passwordProblem("a long enough one", "a long enough one")).toBeNull();
+    const longest = "é".repeat(1024);
+    expect(passwordProblem(longest, longest)).toBeNull();
+    expect(passwordProblem(longest + "x", longest + "x")).toMatch(/1024/);
   });
 
   test("lists split on lines and commas", () => {
