@@ -8,15 +8,23 @@ repository = "https://github.com/alfinkly/lorvaq"
 
 [dependencies]
 anyhow = "1"
+argon2 = "0.5"
 axum = "0.8"
+axum-extra = { version = "0.10", features = ["cookie"] }
+base64 = "0.22"
+chacha20poly1305 = "0.10"
 clap = { version = "4", features = ["derive", "env"] }
 futures = "0.3"
+ipnet = "2"
 mime_guess = "2"
 rand = { version = "0.9", features = ["small_rng"] }
 regex = "1"
 rust-embed = "8"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+sha2 = "0.10"
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "postgres", "migrate", "macros", "json"] }
+time = "0.3"
 tokio = { version = "1", features = ["full"] }
 tokio-stream = { version = "0.1", features = ["sync"] }
 tracing = "0.1"
@@ -24,6 +32,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 [dev-dependencies]
 http-body-util = "0.1"
+testcontainers-modules = { version = "0.13", features = ["postgres"] }
 tower = { version = "0.5", features = ["util"] }
 
 [profile.release]

@@ -1,6 +1,7 @@
 use clap::Parser;
 use lorvaq::app;
 use lorvaq::cli::{Cli, Command};
+use lorvaq::crypto::SecretBox;
 use tracing_subscriber::EnvFilter;
 
 #[tokio::main]
@@ -11,12 +12,19 @@ async fn main() -> anyhow::Result<()> {
         )
         .init();
     match Cli::parse().command {
-        Command::Server { demo, listen } => {
+        Command::Keygen => {
+            println!("{}", SecretBox::generate_key());
+            Ok(())
+        }
+        Command::Server(args) => {
             anyhow::ensure!(
-                demo,
-                "this build only runs with --demo: real sources arrive in the next releases"
+                args.demo,
+                "the live mode is wired in a later step of this plan; use --demo"
             );
-            app::serve(listen, app::demo_scenes()?).await
+            app::serve(args.listen, app::demo_scenes()?).await
+        }
+        Command::Admin { .. } => {
+            anyhow::bail!("admin commands are wired in a later step of this plan")
         }
     }
 }
