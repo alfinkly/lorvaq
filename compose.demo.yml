@@ -1,0 +1,8 @@
+# Try lorvaq on simulated data: docker compose -f compose.demo.yml up --build
+services:
+  lorvaq:
+    build: .
+    image: lorvaq:dev
+    ports:
+      - "8080:8080"
+    command: ["server", "--demo", "--listen", "0.0.0.0:8080"]
