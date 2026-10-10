@@ -4,6 +4,7 @@
 mod account;
 mod admin;
 mod guard;
+mod json;
 mod sessions;
 mod static_files;
 

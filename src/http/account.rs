@@ -1,6 +1,7 @@
 //! Who am I, first-run setup, sign in and out, password change.
 
 use super::guard::{db_error, has_session, json_error, Peer, SESSION_COOKIE};
+use super::json::ApiJson;
 use super::sessions::CHECK_TIMEOUT;
 use super::{AppState, Live};
 use crate::auth;
@@ -131,7 +132,7 @@ pub(super) async fn setup(
     Peer(peer): Peer,
     jar: CookieJar,
     headers: HeaderMap,
-    Json(body): Json<SetupBody>,
+    ApiJson(body): ApiJson<SetupBody>,
 ) -> Response {
     let Some(live) = &s.live else {
         return json_error(StatusCode::NOT_FOUND, "demo mode has no admin");
@@ -165,12 +166,11 @@ pub(super) async fn setup(
             return db_error(e);
         }
     }
-    if let Err(e) = live
-        .store
-        .set_admin_hash(&hash_blocking(live, body.password).await, now)
-        .await
-    {
-        return db_error(e);
+    let hash = hash_blocking(live, body.password).await;
+    match live.store.create_admin_if_absent(&hash, now).await {
+        Ok(true) => {}
+        Ok(false) => return json_error(StatusCode::CONFLICT, "the admin already exists"),
+        Err(e) => return db_error(e),
     }
     if let Err(e) = live.store.delete_setting(auth::SETUP_CODE_KEY).await {
         tracing::warn!("the used setup code stays until it expires: {e:#}");
@@ -183,7 +183,7 @@ pub(super) async fn login(
     Peer(peer): Peer,
     jar: CookieJar,
     headers: HeaderMap,
-    Json(body): Json<LoginBody>,
+    ApiJson(body): ApiJson<LoginBody>,
 ) -> Response {
     let Some(live) = &s.live else {
         return json_error(StatusCode::NOT_FOUND, "demo mode has no admin");
@@ -227,7 +227,7 @@ pub(super) async fn logout(State(s): State<Arc<AppState>>, jar: CookieJar) -> Re
 pub(super) async fn change_password(
     State(s): State<Arc<AppState>>,
     jar: CookieJar,
-    Json(body): Json<PasswordBody>,
+    ApiJson(body): ApiJson<PasswordBody>,
 ) -> Response {
     let live = s
         .live

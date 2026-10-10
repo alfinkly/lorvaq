@@ -1,6 +1,7 @@
 //! Admin settings: viewer access, history retention, scene settings.
 
 use super::guard::{db_error, json_error};
+use super::json::ApiJson;
 use super::AppState;
 use crate::auth::{self, Access};
 use crate::history::{HistorySettings, HISTORY_KEY};
@@ -24,7 +25,7 @@ pub(super) async fn get_access(State(s): State<Arc<AppState>>) -> Json<Access> {
 
 pub(super) async fn put_access(
     State(s): State<Arc<AppState>>,
-    Json(access): Json<Access>,
+    ApiJson(access): ApiJson<Access>,
 ) -> Response {
     if let Err(message) = access.validate() {
         return json_error(StatusCode::BAD_REQUEST, &message);
@@ -56,7 +57,7 @@ pub(super) async fn get_history(State(s): State<Arc<AppState>>) -> Response {
 
 pub(super) async fn put_history(
     State(s): State<Arc<AppState>>,
-    Json(settings): Json<HistorySettings>,
+    ApiJson(settings): ApiJson<HistorySettings>,
 ) -> Response {
     if let Err(message) = settings.validate() {
         return json_error(StatusCode::BAD_REQUEST, &message);
@@ -75,23 +76,29 @@ pub(super) async fn get_scene(State(s): State<Arc<AppState>>, Path(id): Path<Str
 }
 
 /// Applies the settings in the running scene first; only what it accepted is stored.
+/// When storing fails, the scene goes back to its previous settings.
 pub(super) async fn put_scene(
     State(s): State<Arc<AppState>>,
     Path(id): Path<String>,
-    Json(value): Json<Value>,
+    ApiJson(value): ApiJson<Value>,
 ) -> Response {
     let Some(h) = s.scene(&id) else {
         return json_error(StatusCode::NOT_FOUND, "no such scene");
     };
-    match h.configure(value).await {
-        Ok(applied) => match live(&s)
-            .store
-            .put_scene_settings(&id, &applied, now_ms())
-            .await
-        {
-            Ok(()) => Json(applied).into_response(),
-            Err(e) => db_error(e),
-        },
-        Err(e) => json_error(StatusCode::BAD_REQUEST, &format!("{e:#}")),
+    let previous = h.settings();
+    let applied = match h.configure(value).await {
+        Ok(applied) => applied,
+        Err(e) => return json_error(StatusCode::BAD_REQUEST, &format!("{e:#}")),
+    };
+    if let Err(e) = live(&s)
+        .store
+        .put_scene_settings(&id, &applied, now_ms())
+        .await
+    {
+        if let Err(revert) = h.configure(previous).await {
+            tracing::error!("cannot put the scene settings back: {revert:#}");
+        }
+        return db_error(e);
     }
+    Json(applied).into_response()
 }

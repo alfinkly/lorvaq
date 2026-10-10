@@ -92,6 +92,18 @@ impl Store {
         Ok(())
     }
 
+    /// Stores the first admin; false when one already exists (two setups at once: one wins).
+    pub async fn create_admin_if_absent(&self, hash: &str, now_ms: i64) -> anyhow::Result<bool> {
+        let done = sqlx::query(
+            "INSERT INTO admin (id, password_hash, updated_ms) VALUES (1, $1, $2) ON CONFLICT (id) DO NOTHING",
+        )
+        .bind(hash)
+        .bind(now_ms)
+        .execute(&self.pool)
+        .await?;
+        Ok(done.rows_affected() == 1)
+    }
+
     /// Removes the admin and signs everybody out.
     pub async fn reset_admin(&self) -> anyhow::Result<()> {
         let mut tx = self.pool.begin().await?;

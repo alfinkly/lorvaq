@@ -94,6 +94,7 @@ type PlannedJob = (JobInfo, String, &'static str, Option<(u64, Option<u64>)>);
 
 impl CiScene {
     pub fn new(settings: CiSettings) -> anyhow::Result<Self> {
+        settings.validate()?;
         let exits = settings.compile_exits()?;
         Ok(Self {
             settings,
@@ -582,6 +583,7 @@ impl Scene for CiScene {
 
     fn configure(&mut self, settings: serde_json::Value) -> anyhow::Result<()> {
         let settings: CiSettings = serde_json::from_value(settings)?;
+        settings.validate()?;
         let exits = settings.compile_exits()?;
         self.settings = settings;
         self.exits = exits;

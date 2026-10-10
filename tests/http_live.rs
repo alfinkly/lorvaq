@@ -3,7 +3,7 @@ mod common;
 use axum::extract::connect_info::MockConnectInfo;
 use axum::http::StatusCode;
 use axum::Router;
-use common::call;
+use common::{call, call_raw};
 use lorvaq::auth::{self, Access};
 use lorvaq::crypto::{self, SecretBox};
 use lorvaq::http::{router, AppState, Live};
@@ -545,4 +545,103 @@ async fn parallel_wrong_logins_are_counted_before_they_are_checked() {
         10,
         "{statuses:?}"
     );
+}
+
+#[tokio::test]
+async fn body_rejections_answer_with_an_error_object() {
+    let (r, _, cookie) = signed_in(Access::Admin).await;
+    let json = Some("application/json");
+    for (status, uri, ct, body) in [
+        (StatusCode::BAD_REQUEST, "/api/v1/login", json, "{not json"),
+        (
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "/api/v1/login",
+            json,
+            "{}",
+        ),
+        (
+            StatusCode::UNSUPPORTED_MEDIA_TYPE,
+            "/api/v1/login",
+            None,
+            r#"{"password":"x"}"#,
+        ),
+        (
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "/api/v1/admin/access",
+            json,
+            r#"{"mode":"proxy"}"#,
+        ),
+    ] {
+        let method = if uri.contains("admin") { "PUT" } else { "POST" };
+        let (got, answer) = call_raw(&r, method, uri, Some(&cookie), ct, body).await;
+        assert_eq!(got, status, "{uri} {body}: {answer}");
+        assert!(
+            answer["error"].as_str().is_some_and(|m| !m.is_empty()),
+            "{uri} {body}: {answer}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn nonsense_numbers_in_scene_settings_are_refused() {
+    let (r, store, cookie) = signed_in(Access::Admin).await;
+    let (_, mut next, _) = call(
+        &r,
+        "GET",
+        "/api/v1/admin/scenes/ci/settings",
+        Some(&cookie),
+        None,
+        &[],
+    )
+    .await;
+    next["max_projects"] = json!(0);
+    let (status, body, _) = call(
+        &r,
+        "PUT",
+        "/api/v1/admin/scenes/ci/settings",
+        Some(&cookie),
+        Some(next),
+        &[],
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert!(body["error"].as_str().unwrap().contains("max_projects"));
+    assert_eq!(store.scene_settings("ci").await.unwrap(), None);
+}
+
+#[tokio::test]
+async fn a_failed_store_puts_the_scene_settings_back() {
+    let (r, store, cookie) = signed_in(Access::Admin).await;
+    let (_, mut next, _) = call(
+        &r,
+        "GET",
+        "/api/v1/admin/scenes/ci/settings",
+        Some(&cookie),
+        None,
+        &[],
+    )
+    .await;
+    let before = next.clone();
+    next["max_projects"] = json!(3);
+    store.close().await; // the cached session still lets the admin in
+    let (status, _, _) = call(
+        &r,
+        "PUT",
+        "/api/v1/admin/scenes/ci/settings",
+        Some(&cookie),
+        Some(next),
+        &[],
+    )
+    .await;
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+    let (_, now, _) = call(
+        &r,
+        "GET",
+        "/api/v1/admin/scenes/ci/settings",
+        Some(&cookie),
+        None,
+        &[],
+    )
+    .await;
+    assert_eq!(now, before, "the scene is back on its old settings");
 }

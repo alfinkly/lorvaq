@@ -87,3 +87,32 @@ pub async fn call(
         cookie,
     )
 }
+
+/// Like `call`, with the body as raw text and an optional content type.
+pub async fn call_raw(
+    router: &Router,
+    method: &str,
+    uri: &str,
+    cookie: Option<&str>,
+    content_type: Option<&str>,
+    body: &str,
+) -> (StatusCode, Value) {
+    let mut req = Request::builder().method(method).uri(uri);
+    if let Some(c) = cookie {
+        req = req.header(header::COOKIE, c);
+    }
+    if let Some(t) = content_type {
+        req = req.header(header::CONTENT_TYPE, t);
+    }
+    let res = router
+        .clone()
+        .oneshot(req.body(Body::from(body.to_string())).unwrap())
+        .await
+        .unwrap();
+    let status = res.status();
+    let bytes = res.into_body().collect().await.unwrap().to_bytes();
+    (
+        status,
+        serde_json::from_slice(&bytes).unwrap_or(Value::Null),
+    )
+}

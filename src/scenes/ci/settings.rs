@@ -65,6 +65,27 @@ impl Exit {
 }
 
 impl CiSettings {
+    /// Rejects numbers that would break the scene (no projects, no slots, negative times).
+    pub fn validate(&self) -> anyhow::Result<()> {
+        anyhow::ensure!(self.max_projects >= 1, "max_projects must be at least 1");
+        anyhow::ensure!(
+            (1..=1000).contains(&self.default_capacity),
+            "default_capacity must be between 1 and 1000"
+        );
+        if let Some((key, _)) = self.capacities.iter().find(|(_, c)| **c < 1) {
+            anyhow::bail!("the capacity of {key:?} must be at least 1");
+        }
+        for (name, ms) in [
+            ("finished_linger_ms", self.finished_linger_ms),
+            ("missing_grace_ms", self.missing_grace_ms),
+            ("project_idle_ms", self.project_idle_ms),
+            ("project_quiet_ms", self.project_quiet_ms),
+        ] {
+            anyhow::ensure!(ms >= 0, "{name} must not be negative");
+        }
+        Ok(())
+    }
+
     pub fn compile_exits(&self) -> anyhow::Result<Vec<Exit>> {
         self.exits
             .iter()
@@ -153,6 +174,34 @@ mod tests {
             ..CiSettings::default()
         };
         assert!(!s.compile_exits().unwrap()[0].matches(&job("build", "build")));
+    }
+
+    #[test]
+    fn defaults_are_valid_and_odd_numbers_are_not() {
+        assert!(CiSettings::default().validate().is_ok());
+        let bad = |edit: fn(&mut CiSettings)| {
+            let mut s = CiSettings::default();
+            edit(&mut s);
+            s.validate().is_err()
+        };
+        assert!(bad(|s| s.max_projects = 0));
+        assert!(bad(|s| s.default_capacity = 0));
+        assert!(bad(|s| s.default_capacity = 1001));
+        assert!(bad(|s| {
+            s.capacities.insert("host-1".into(), 0);
+        }));
+        assert!(bad(|s| s.finished_linger_ms = -1));
+        assert!(bad(|s| s.missing_grace_ms = -1));
+        assert!(bad(|s| s.project_idle_ms = -1));
+        assert!(bad(|s| s.project_quiet_ms = -1));
+        let mut ok = CiSettings {
+            default_capacity: 1000,
+            max_projects: 1,
+            finished_linger_ms: 0,
+            ..CiSettings::default()
+        };
+        ok.capacities.insert("host-1".into(), 1);
+        assert!(ok.validate().is_ok(), "the edges are allowed");
     }
 
     #[test]

@@ -29,6 +29,19 @@ async fn settings_round_trip() {
 }
 
 #[tokio::test]
+async fn only_the_first_of_two_setups_stores_the_admin() {
+    let s = common::store().await;
+    assert!(s.create_admin_if_absent("first", 1).await.unwrap());
+    assert!(!s.create_admin_if_absent("second", 2).await.unwrap());
+    assert_eq!(s.admin_hash().await.unwrap().as_deref(), Some("first"));
+    s.reset_admin().await.unwrap();
+    assert!(
+        s.create_admin_if_absent("third", 3).await.unwrap(),
+        "possible again after a reset"
+    );
+}
+
+#[tokio::test]
 async fn admin_and_sessions() {
     let s = common::store().await;
     assert_eq!(s.admin_hash().await.unwrap(), None);
