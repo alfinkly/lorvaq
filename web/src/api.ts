@@ -31,6 +31,10 @@ export function follow(
 
   const stream = (world: ClientWorld) =>
     new Promise<void>((done) => {
+      if (closed) {
+        done();
+        return;
+      }
       streamDone = done;
       source = new EventSource(`/api/v1/scenes/${encodeURIComponent(sceneId)}/events?since=${world.seq}`);
       source.onopen = () => onStatus("live");
@@ -44,7 +48,9 @@ export function follow(
   void (async () => {
     while (!closed) {
       try {
-        const world = ClientWorld.fromSnapshot(await fetchSnapshot(sceneId));
+        const snapshot = await fetchSnapshot(sceneId);
+        if (closed) break;
+        const world = ClientWorld.fromSnapshot(snapshot);
         onWorld(world, []);
         await stream(world);
       } catch {
