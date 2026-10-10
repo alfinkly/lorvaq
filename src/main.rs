@@ -1,4 +1,5 @@
 use clap::Parser;
+use lorvaq::app;
 use lorvaq::cli::{Cli, Command};
 use tracing_subscriber::EnvFilter;
 
@@ -9,8 +10,13 @@ async fn main() -> anyhow::Result<()> {
             EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
         )
         .init();
-    let Command::Server { demo, listen } = Cli::parse().command;
-    anyhow::ensure!(demo, "this build only runs with --demo");
-    tracing::info!(%listen, "nothing to serve yet");
-    Ok(())
+    match Cli::parse().command {
+        Command::Server { demo, listen } => {
+            anyhow::ensure!(
+                demo,
+                "this build only runs with --demo: real sources arrive in the next releases"
+            );
+            app::serve(listen, app::demo_scenes()?).await
+        }
+    }
 }
