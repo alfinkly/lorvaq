@@ -3,6 +3,7 @@
 use crate::http::{router, AppState};
 use crate::scene::{self, SceneHandle};
 use crate::scenes::ci::CiScene;
+use futures::FutureExt;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
@@ -19,11 +20,22 @@ pub async fn serve(listen: SocketAddr, scenes: Vec<SceneHandle>) -> anyhow::Resu
     let app = router(Arc::new(AppState { scenes }));
     let listener = tokio::net::TcpListener::bind(listen).await?;
     tracing::info!(%listen, "lorvaq is listening");
-    axum::serve(listener, app)
-        .with_graceful_shutdown(shutdown_signal())
-        .await?;
+    let signal = shutdown_signal().shared();
+    let server = axum::serve(listener, app).with_graceful_shutdown(signal.clone());
+    // Event streams never end on their own, so graceful shutdown would wait for
+    // them forever (and docker would kill us after 10 s): give them a moment, then go.
+    let deadline = async {
+        signal.await;
+        tokio::time::sleep(STREAM_GRACE).await;
+    };
+    tokio::select! {
+        result = server => result?,
+        _ = deadline => tracing::info!("closed the remaining event streams"),
+    }
     Ok(())
 }
+
+const STREAM_GRACE: Duration = Duration::from_secs(2);
 
 async fn shutdown_signal() {
     let ctrl_c = async {
