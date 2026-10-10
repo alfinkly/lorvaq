@@ -2,4 +2,9 @@
 
 pub mod input;
 pub mod matching;
+mod reduce;
 pub mod settings;
+#[cfg(test)]
+pub(crate) mod testkit;
+
+pub use reduce::*;
