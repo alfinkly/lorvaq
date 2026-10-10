@@ -4455,7 +4455,7 @@ cargo test && cargo clippy --all-targets -- -D warnings && cargo fmt --check
 git grep -n -i -E -f ~/.config/lorvaq/denylist -- ':!web/src/scenes/ci/renderer.ts' || echo "clean"
 ```
 
-Expected: всё зелёное; поиск следов студии печатает `clean`.
+Expected: всё зелёное; поиск по личному deny-листу (файл вне репо, spec §12) печатает `clean`.
 
 - [ ] **Step 4: Commit**
 
