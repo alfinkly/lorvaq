@@ -105,3 +105,60 @@ async fn events_are_written_counted_and_pruned() {
     );
     assert_eq!(s.event_count("ci").await.unwrap(), 1);
 }
+#[tokio::test]
+async fn setup_codes_are_one_time_and_expire() {
+    let s = common::store().await;
+    assert!(
+        !lorvaq::auth::check_setup_code(&s, "AAAA-AAAA-AAAA-AAAA", 0)
+            .await
+            .unwrap(),
+        "no code issued"
+    );
+    let code = lorvaq::auth::issue_setup_code(&s, 1_000).await.unwrap();
+    assert!(lorvaq::auth::check_setup_code(&s, &code, 2_000)
+        .await
+        .unwrap());
+    assert!(
+        lorvaq::auth::check_setup_code(&s, &code.to_lowercase().replace('-', " "), 2_000)
+            .await
+            .unwrap()
+    );
+    assert!(!lorvaq::auth::check_setup_code(&s, "WRONG-CODE", 2_000)
+        .await
+        .unwrap());
+    assert!(
+        !lorvaq::auth::check_setup_code(&s, &code, 1_000 + 24 * 3600 * 1000)
+            .await
+            .unwrap(),
+        "expired"
+    );
+    let newer = lorvaq::auth::issue_setup_code(&s, 3_000).await.unwrap();
+    assert!(
+        !lorvaq::auth::check_setup_code(&s, &code, 4_000)
+            .await
+            .unwrap(),
+        "only the newest code works"
+    );
+    assert!(lorvaq::auth::check_setup_code(&s, &newer, 4_000)
+        .await
+        .unwrap());
+}
+
+#[tokio::test]
+async fn a_setup_code_is_announced_only_without_an_admin() {
+    let s = common::store().await;
+    lorvaq::auth::announce_setup_code(&s, 0).await.unwrap();
+    assert!(s
+        .setting::<serde_json::Value>(lorvaq::auth::SETUP_CODE_KEY)
+        .await
+        .unwrap()
+        .is_some());
+    let t = common::store().await;
+    t.set_admin_hash("h", 0).await.unwrap();
+    lorvaq::auth::announce_setup_code(&t, 0).await.unwrap();
+    assert!(t
+        .setting::<serde_json::Value>(lorvaq::auth::SETUP_CODE_KEY)
+        .await
+        .unwrap()
+        .is_none());
+}
