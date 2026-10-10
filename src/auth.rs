@@ -7,7 +7,7 @@ use axum::http::{HeaderMap, HeaderName};
 use ipnet::IpNet;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::net::{IpAddr, Ipv6Addr};
+use std::net::{IpAddr, Ipv6Addr, SocketAddr};
 
 pub const ACCESS_KEY: &str = "access";
 pub const SETUP_CODE_KEY: &str = "setup_code";
@@ -95,6 +95,15 @@ impl Access {
     }
 }
 
+/// One `X-Forwarded-For` hop: an address, optionally with a port (`1.2.3.4:80`, `[::1]:80`).
+fn parse_hop(hop: &[u8]) -> Option<IpAddr> {
+    let text = std::str::from_utf8(hop).ok()?.trim();
+    text.parse::<SocketAddr>()
+        .map(|a| a.ip())
+        .or_else(|_| text.parse::<IpAddr>())
+        .ok()
+}
+
 impl Access {
     /// Whom a sign-in attempt counts against. Behind a trusted proxy that is the
     /// rightmost `X-Forwarded-For` hop that is not itself a trusted proxy; otherwise
@@ -108,11 +117,9 @@ impl Access {
             return peer_key;
         }
         for value in headers.get_all(FORWARDED_FOR).iter().rev() {
-            let Ok(text) = value.to_str() else {
-                return peer_key;
-            };
-            for hop in text.rsplit(',') {
-                let Ok(ip) = hop.trim().parse::<IpAddr>() else {
+            // By bytes: a forged non-ASCII hop on the left must not hide the hops the proxy appended.
+            for hop in value.as_bytes().rsplit(|&b| b == b',') {
+                let Some(ip) = parse_hop(hop) else {
                     return peer_key;
                 };
                 let ip = ip.to_canonical();
@@ -387,6 +394,44 @@ mod tests {
     }
 
     #[test]
+    fn limiter_key_survives_non_ascii_garbage_to_the_left() {
+        let p = proxy(&["10.0.0.0/8"]);
+        let peer = ip("10.0.0.1");
+        let mut h = HeaderMap::new();
+        h.insert(
+            "x-forwarded-for",
+            HeaderValue::from_bytes(b"\xff, 203.0.113.7").unwrap(),
+        );
+        assert_eq!(p.limiter_key(peer, &h), ip("203.0.113.7").unwrap());
+        let mut line = HeaderMap::new();
+        line.append(
+            "x-forwarded-for",
+            HeaderValue::from_bytes(b"\xff\xfe").unwrap(),
+        );
+        line.append("x-forwarded-for", HeaderValue::from_static("203.0.113.7"));
+        assert_eq!(p.limiter_key(peer, &line), ip("203.0.113.7").unwrap());
+    }
+
+    #[test]
+    fn limiter_key_reads_hops_with_ports() {
+        let p = proxy(&["10.0.0.0/8"]);
+        let peer = ip("10.0.0.1");
+        assert_eq!(
+            p.limiter_key(peer, &forwarded("198.51.100.1, 203.0.113.7:1234")),
+            ip("203.0.113.7").unwrap()
+        );
+        assert_eq!(
+            p.limiter_key(peer, &forwarded("[2001:db8:1:2:ffff::9]:443")),
+            ip("2001:db8:1:2::").unwrap()
+        );
+        assert_eq!(
+            p.limiter_key(peer, &forwarded("203.0.113.7:1234, 10.0.0.2:80")),
+            ip("203.0.113.7").unwrap(),
+            "a trusted hop with a port is still skipped"
+        );
+    }
+
+    #[test]
     fn limiter_key_ignores_the_header_from_a_stranger() {
         let p = proxy(&["10.0.0.0/8"]);
         let stranger = ip("192.0.2.9");
@@ -394,6 +439,12 @@ mod tests {
             p.limiter_key(stranger, &forwarded("203.0.113.7")),
             stranger.unwrap()
         );
+        let mut raw = HeaderMap::new();
+        raw.insert(
+            "x-forwarded-for",
+            HeaderValue::from_bytes(b"\xff, 203.0.113.7").unwrap(),
+        );
+        assert_eq!(p.limiter_key(stranger, &raw), stranger.unwrap());
     }
 
     #[test]
