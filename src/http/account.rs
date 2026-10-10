@@ -17,6 +17,7 @@ use serde_json::{json, Value};
 use std::net::IpAddr;
 use std::sync::Arc;
 use std::time::Instant;
+use tokio::sync::Semaphore;
 
 pub const MIN_PASSWORD: usize = 12;
 const SESSION_TTL_MS: i64 = 30 * 24 * 3600 * 1000;
@@ -45,27 +46,39 @@ fn short_password() -> Response {
     )
 }
 
-/// Password hashing is slow and memory-hungry: at most `ARGON_RUNS` run at once, the rest wait.
-async fn hash_blocking(live: &Live, password: String) -> String {
-    let _permit = live
-        .argon
-        .acquire()
+/// Runs slow, memory-hungry work on the blocking pool; at most `ARGON_RUNS` run at once, the rest wait.
+/// The permit travels into the closure: a blocking task cannot be cancelled, so a client that
+/// disconnects must not free its place while the work still runs.
+async fn run_limited<T: Send + 'static>(
+    gate: &Arc<Semaphore>,
+    work: impl FnOnce() -> T + Send + 'static,
+) -> Option<T> {
+    let permit = gate
+        .clone()
+        .acquire_owned()
         .await
         .expect("the semaphore is never closed");
-    tokio::task::spawn_blocking(move || crypto::hash_password(&password))
+    tokio::task::spawn_blocking(move || {
+        let out = work();
+        drop(permit);
+        out
+    })
+    .await
+    .ok()
+}
+
+async fn hash_blocking(live: &Live, password: String) -> String {
+    run_limited(&live.argon, move || crypto::hash_password(&password))
         .await
         .expect("hashing does not panic")
 }
 
 async fn verify_blocking(live: &Live, password: String, hash: String) -> bool {
-    let _permit = live
-        .argon
-        .acquire()
-        .await
-        .expect("the semaphore is never closed");
-    tokio::task::spawn_blocking(move || crypto::verify_password(&password, &hash))
-        .await
-        .unwrap_or(false)
+    run_limited(&live.argon, move || {
+        crypto::verify_password(&password, &hash)
+    })
+    .await
+    .unwrap_or(false)
 }
 
 fn too_many_attempts() -> Response {
@@ -260,4 +273,41 @@ pub(super) async fn change_password(
         return db_error(e);
     }
     Json(json!({ "ok": true })).into_response()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::Duration;
+
+    #[tokio::test]
+    async fn the_permit_outlives_a_cancelled_request() {
+        let gate = Arc::new(Semaphore::new(1));
+        let (started_tx, started_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+        let g = gate.clone();
+        let request = tokio::spawn(async move {
+            run_limited(&g, move || {
+                started_tx.send(()).unwrap();
+                release_rx.recv().unwrap();
+            })
+            .await
+        });
+        // Wait until the blocking work really runs, then the client "disconnects".
+        tokio::task::spawn_blocking(move || started_rx.recv().unwrap())
+            .await
+            .unwrap();
+        request.abort();
+        assert!(request.await.unwrap_err().is_cancelled());
+        assert_eq!(
+            gate.available_permits(),
+            0,
+            "the work is still running: its place is not free"
+        );
+        release_tx.send(()).unwrap();
+        let _permit = tokio::time::timeout(Duration::from_secs(5), gate.acquire())
+            .await
+            .expect("the place is freed once the work ends")
+            .unwrap();
+    }
 }

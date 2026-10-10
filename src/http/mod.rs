@@ -53,7 +53,7 @@ pub struct Live {
     /// Admin sessions the database confirmed lately.
     pub sessions: Mutex<SessionCache>,
     /// Caps concurrent password hash/verify runs (each takes about 19 MiB).
-    pub argon: Semaphore,
+    pub argon: Arc<Semaphore>,
 }
 
 impl Live {
@@ -72,7 +72,7 @@ impl Live {
             limiter: Mutex::new(LoginLimiter::default()),
             history,
             sessions: Mutex::new(SessionCache::default()),
-            argon: Semaphore::new(ARGON_RUNS),
+            argon: Arc::new(Semaphore::new(ARGON_RUNS)),
         }
     }
 }
