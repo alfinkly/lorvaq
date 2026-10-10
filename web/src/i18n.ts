@@ -19,6 +19,8 @@ export const t = {
   confirmPassword: "Repeat the password",
   createAdmin: "Create admin",
   signInTitle: "Sign in",
+  wrongPassword: "Wrong password",
+  sessionExpired: "Your session has ended; sign in again",
   signIn: "Sign in",
   signOut: "Sign out",
   settings: "Settings",

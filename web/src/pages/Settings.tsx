@@ -1,6 +1,5 @@
 import { useEffect, useState, type FormEvent, type ReactNode } from "react";
 import {
-  ApiError,
   changePassword,
   getAccess,
   getHistory,
@@ -14,9 +13,10 @@ import {
   type HistoryInfo,
 } from "../api";
 import { t } from "../i18n";
+import { failure } from "../settings/errors";
 import { accessProblem, exitsProblem, formatCapacities, parseCapacities, parseList, passwordProblem, retentionProblem } from "../settings/forms";
 
-const message = (err: unknown) => (err instanceof ApiError ? err.message : String(err));
+type Props = { onAuthLost: () => void };
 
 function Section({ title, children, onSubmit, status }: { title: string; children: ReactNode; onSubmit: (e: FormEvent) => void; status: string | null }) {
   return (
@@ -31,7 +31,7 @@ function Section({ title, children, onSubmit, status }: { title: string; childre
   );
 }
 
-function AccessSection() {
+function AccessSection({ onAuthLost }: Props) {
   const [mode, setMode] = useState<Access["mode"]>("admin");
   const [header, setHeader] = useState("x-forwarded-user");
   const [trusted, setTrusted] = useState("");
@@ -46,7 +46,7 @@ function AccessSection() {
           setTrusted(a.trusted.join("\n"));
         }
       })
-      .catch((e) => setStatus(message(e)));
+      .catch((e) => setStatus(failure(e, onAuthLost)));
   }, []);
 
   async function save(e: FormEvent) {
@@ -58,7 +58,7 @@ function AccessSection() {
       await putAccess(access);
       setStatus(t.saved);
     } catch (err) {
-      setStatus(message(err));
+      setStatus(failure(err, onAuthLost));
     }
   }
 
@@ -86,7 +86,7 @@ function AccessSection() {
   );
 }
 
-function CiSection() {
+function CiSection({ onAuthLost }: Props) {
   const [settings, setSettings] = useState<CiSettings | null>(null);
   const [exits, setExits] = useState<ExitRule[]>([]);
   const [capacities, setCapacities] = useState("");
@@ -99,7 +99,7 @@ function CiSection() {
         setExits(s.exits);
         setCapacities(formatCapacities(s.capacities));
       })
-      .catch((e) => setStatus(message(e)));
+      .catch((e) => setStatus(failure(e, onAuthLost)));
   }, []);
 
   if (!settings) return status ? <p className="error">{status}</p> : null;
@@ -118,7 +118,7 @@ function CiSection() {
       setSettings(applied);
       setStatus(t.saved);
     } catch (err) {
-      setStatus(message(err));
+      setStatus(failure(err, onAuthLost));
     }
   }
 
@@ -150,7 +150,7 @@ function CiSection() {
   );
 }
 
-function HistorySection() {
+function HistorySection({ onAuthLost }: Props) {
   const [info, setInfo] = useState<HistoryInfo | null>(null);
   const [days, setDays] = useState(14);
   const [status, setStatus] = useState<string | null>(null);
@@ -161,7 +161,7 @@ function HistorySection() {
         setInfo(h);
         setDays(h.retention_days);
       })
-      .catch((e) => setStatus(message(e)));
+      .catch((e) => setStatus(failure(e, onAuthLost)));
   }, []);
 
   async function save(e: FormEvent) {
@@ -172,7 +172,7 @@ function HistorySection() {
       await putHistory(days);
       setStatus(t.saved);
     } catch (err) {
-      setStatus(message(err));
+      setStatus(failure(err, onAuthLost));
     }
   }
 
@@ -192,7 +192,7 @@ function HistorySection() {
   );
 }
 
-function PasswordSection() {
+function PasswordSection({ onAuthLost }: Props) {
   const [current, setCurrent] = useState("");
   const [next, setNext] = useState("");
   const [confirm, setConfirm] = useState("");
@@ -209,7 +209,7 @@ function PasswordSection() {
       setConfirm("");
       setStatus(t.saved);
     } catch (err) {
-      setStatus(message(err));
+      setStatus(failure(err, onAuthLost));
     }
   }
 
@@ -231,13 +231,13 @@ function PasswordSection() {
   );
 }
 
-export function Settings() {
+export function Settings({ onAuthLost }: Props) {
   return (
     <div className="settings">
-      <AccessSection />
-      <CiSection />
-      <HistorySection />
-      <PasswordSection />
+      <AccessSection onAuthLost={onAuthLost} />
+      <CiSection onAuthLost={onAuthLost} />
+      <HistorySection onAuthLost={onAuthLost} />
+      <PasswordSection onAuthLost={onAuthLost} />
     </div>
   );
 }

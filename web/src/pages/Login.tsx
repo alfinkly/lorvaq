@@ -14,7 +14,7 @@ export function Login({ onDone }: { onDone: () => void }) {
       await login(password);
       onDone();
     } catch (err) {
-      setError(err instanceof AuthError ? "Wrong password" : err instanceof ApiError ? err.message : String(err));
+      setError(err instanceof AuthError ? t.wrongPassword : err instanceof ApiError ? err.message : String(err));
     } finally {
       setBusy(false);
     }

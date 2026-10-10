@@ -68,9 +68,12 @@ export function App() {
   if (!me) main = <p className="hint pad">{t[status]}</p>;
   else if (me.setup_needed) main = <Setup onDone={refresh} />;
   else if (route === "settings" && !me.admin) main = <Login onDone={refresh} />;
-  else if (route === "settings") main = <Settings />;
+  else if (route === "settings") main = <Settings onAuthLost={refresh} />;
   else if (!me.viewer) main = <Login onDone={refresh} />;
   else if (active === "ci") main = <CiView onStatus={onStatus} onStale={setStale} />;
+
+  // The connection status belongs to the scenes; sign-in, setup and settings have none.
+  const showStatus = !!me && !me.setup_needed && me.viewer && route === "scenes";
 
   return (
     <div className="app">
@@ -90,7 +93,7 @@ export function App() {
             </button>
           ))}
         </nav>
-        <span className="status">{t[status]}</span>
+        {showStatus && <span className="status">{t[status]}</span>}
         {me && !me.demo && me.admin && (
           <>
             <a href="#/settings">{t.settings}</a>
