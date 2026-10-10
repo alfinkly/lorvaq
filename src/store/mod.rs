@@ -130,6 +130,21 @@ impl Store {
         .await?)
     }
 
+    /// When the session expires, or None when there is no live session with this hash.
+    pub async fn session_expiry(
+        &self,
+        token_hash: &str,
+        now_ms: i64,
+    ) -> anyhow::Result<Option<i64>> {
+        Ok(sqlx::query_scalar(
+            "SELECT expires_ms FROM sessions WHERE token_hash = $1 AND expires_ms > $2",
+        )
+        .bind(token_hash)
+        .bind(now_ms)
+        .fetch_optional(&self.pool)
+        .await?)
+    }
+
     pub async fn delete_session(&self, token_hash: &str) -> anyhow::Result<()> {
         sqlx::query("DELETE FROM sessions WHERE token_hash = $1")
             .bind(token_hash)

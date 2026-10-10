@@ -4,6 +4,7 @@
 mod account;
 mod admin;
 mod guard;
+mod sessions;
 mod static_files;
 
 use crate::auth::{Access, LoginLimiter};
@@ -28,6 +29,8 @@ use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
 use tokio_stream::wrappers::BroadcastStream;
 
+pub use sessions::SessionCache;
+
 pub struct AppState {
     pub scenes: Vec<SceneHandle>,
     /// None in demo mode: no database, no admin, everything open.
@@ -42,6 +45,28 @@ pub struct Live {
     pub access: RwLock<Access>,
     pub limiter: Mutex<LoginLimiter>,
     pub history: Vec<(&'static str, Arc<Mutex<HistoryStatus>>)>,
+    /// Admin sessions the database confirmed lately.
+    pub sessions: Mutex<SessionCache>,
+}
+
+impl Live {
+    pub fn new(
+        store: Store,
+        secrets: SecretBox,
+        cookie_secure: bool,
+        access: Access,
+        history: Vec<(&'static str, Arc<Mutex<HistoryStatus>>)>,
+    ) -> Self {
+        Self {
+            store,
+            secrets,
+            cookie_secure,
+            access: RwLock::new(access),
+            limiter: Mutex::new(LoginLimiter::default()),
+            history,
+            sessions: Mutex::new(SessionCache::default()),
+        }
+    }
 }
 
 impl AppState {

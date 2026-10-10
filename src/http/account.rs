@@ -1,6 +1,7 @@
 //! Who am I, first-run setup, sign in and out, password change.
 
 use super::guard::{db_error, has_session, json_error, Peer, SESSION_COOKIE};
+use super::sessions::CHECK_TIMEOUT;
 use super::{AppState, Live};
 use crate::auth;
 use crate::crypto;
@@ -14,6 +15,7 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 use std::net::IpAddr;
 use std::sync::Arc;
+use std::time::Instant;
 
 pub const MIN_PASSWORD: usize = 12;
 const SESSION_TTL_MS: i64 = 30 * 24 * 3600 * 1000;
@@ -66,13 +68,14 @@ fn session_cookie(token: String, secure: bool) -> Cookie<'static> {
 
 async fn start_session(live: &Live, jar: CookieJar, now: i64) -> Response {
     let token = crypto::random_token();
-    if let Err(e) = live
-        .store
-        .create_session(&crypto::token_hash(&token), now, SESSION_TTL_MS)
-        .await
-    {
+    let hash = crypto::token_hash(&token);
+    if let Err(e) = live.store.create_session(&hash, now, SESSION_TTL_MS).await {
         return db_error(e);
     }
+    live.sessions
+        .lock()
+        .expect(LOCK)
+        .confirm(&hash, now + SESSION_TTL_MS, now, Instant::now());
     (
         jar.add(session_cookie(token, live.cookie_secure)),
         Json(json!({ "ok": true })),
@@ -96,7 +99,10 @@ pub(super) async fn me(
         );
     };
     let admin = has_session(&s, &jar).await;
-    let setup_needed = matches!(live.store.admin_hash().await, Ok(None));
+    let setup_needed = matches!(
+        tokio::time::timeout(CHECK_TIMEOUT, live.store.admin_hash()).await,
+        Ok(Ok(None))
+    );
     let access = live.access.read().expect(LOCK).clone();
     let viewer = access.viewer_allowed(peer, &headers, admin);
     Json(json!({ "demo": false, "setup_needed": setup_needed, "admin": admin, "viewer": viewer }))
@@ -180,11 +186,9 @@ pub(super) async fn login(
 
 pub(super) async fn logout(State(s): State<Arc<AppState>>, jar: CookieJar) -> Response {
     if let (Some(live), Some(cookie)) = (&s.live, jar.get(SESSION_COOKIE)) {
-        if let Err(e) = live
-            .store
-            .delete_session(&crypto::token_hash(cookie.value()))
-            .await
-        {
+        let hash = crypto::token_hash(cookie.value());
+        live.sessions.lock().expect(LOCK).evict(&hash);
+        if let Err(e) = live.store.delete_session(&hash).await {
             return db_error(e);
         }
     }
@@ -225,6 +229,7 @@ pub(super) async fn change_password(
         .get(SESSION_COOKIE)
         .map(|c| crypto::token_hash(c.value()))
         .expect("the admin guard checked the cookie");
+    live.sessions.lock().expect(LOCK).evict_except(&mine);
     if let Err(e) = live.store.delete_other_sessions(&mine).await {
         return db_error(e);
     }

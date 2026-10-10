@@ -1,6 +1,6 @@
 //! Wires scenes, sources, storage and HTTP into a running server.
 
-use crate::auth::{self, Access, LoginLimiter};
+use crate::auth::{self, Access};
 use crate::cli::{DbArgs, ServerArgs};
 use crate::crypto::SecretBox;
 use crate::history::{self, HistoryStatus};
@@ -12,7 +12,7 @@ use crate::store::Store;
 use anyhow::Context;
 use futures::FutureExt;
 use std::net::SocketAddr;
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 /// Event streams never end on their own; after a stop signal they get this long.
@@ -70,14 +70,7 @@ pub async fn live_state(
     if !cookie_secure {
         tracing::warn!("LORVAQ_PUBLIC_URL is not an https URL, so the session cookie goes without the Secure flag; set it in production");
     }
-    let live = Live {
-        store,
-        secrets,
-        cookie_secure,
-        access: RwLock::new(access),
-        limiter: Mutex::new(LoginLimiter::default()),
-        history,
-    };
+    let live = Live::new(store, secrets, cookie_secure, access, history);
     Ok(AppState {
         scenes,
         live: Some(live),

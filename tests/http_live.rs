@@ -4,7 +4,7 @@ use axum::extract::connect_info::MockConnectInfo;
 use axum::http::StatusCode;
 use axum::Router;
 use common::call;
-use lorvaq::auth::{self, Access, LoginLimiter};
+use lorvaq::auth::{self, Access};
 use lorvaq::crypto::{self, SecretBox};
 use lorvaq::http::{router, AppState, Live};
 use lorvaq::scene;
@@ -12,7 +12,7 @@ use lorvaq::scenes::ci::{settings::CiSettings, CiScene};
 use lorvaq::store::Store;
 use serde_json::json;
 use std::net::SocketAddr;
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::Arc;
 use std::time::Duration;
 
 const PASSWORD: &str = "correct horse battery";
@@ -23,14 +23,13 @@ async fn app(access: Access) -> (Router, Store) {
         CiScene::new(CiSettings::default()).unwrap(),
         Duration::from_secs(1),
     );
-    let live = Live {
-        store: store.clone(),
-        secrets: SecretBox::from_base64(&SecretBox::generate_key()).unwrap(),
-        cookie_secure: false,
-        access: RwLock::new(access),
-        limiter: Mutex::new(LoginLimiter::default()),
-        history: vec![],
-    };
+    let live = Live::new(
+        store.clone(),
+        SecretBox::from_base64(&SecretBox::generate_key()).unwrap(),
+        false,
+        access,
+        vec![],
+    );
     let router = router(Arc::new(AppState {
         scenes: vec![ci],
         live: Some(live),
@@ -392,6 +391,66 @@ async fn a_down_database_answers_503_and_me_still_works() {
             .0,
         StatusCode::OK,
         "the live scene does not need the database"
+    );
+}
+
+#[tokio::test]
+async fn admin_mode_keeps_the_scenes_up_when_the_database_is_down() {
+    let (r, store, cookie) = signed_in(Access::Admin).await;
+    store.close().await;
+    assert_eq!(
+        call(
+            &r,
+            "GET",
+            "/api/v1/scenes/ci/snapshot",
+            Some(&cookie),
+            None,
+            &[]
+        )
+        .await
+        .0,
+        StatusCode::OK,
+        "a session confirmed before keeps working"
+    );
+    assert_eq!(
+        call(&r, "GET", "/api/v1/scenes/ci/snapshot", None, None, &[])
+            .await
+            .0,
+        StatusCode::UNAUTHORIZED,
+        "an anonymous request is still refused"
+    );
+    assert_eq!(
+        call(
+            &r,
+            "GET",
+            "/api/v1/scenes/ci/snapshot",
+            Some("lorvaq_session=never-seen"),
+            None,
+            &[]
+        )
+        .await
+        .0,
+        StatusCode::UNAUTHORIZED,
+        "an unknown session is not trusted"
+    );
+}
+
+#[tokio::test]
+async fn logout_forgets_the_session_at_once() {
+    let (r, _, cookie) = signed_in(Access::Admin).await;
+    assert_eq!(
+        call(&r, "GET", "/api/v1/scenes", Some(&cookie), None, &[])
+            .await
+            .0,
+        StatusCode::OK
+    );
+    call(&r, "POST", "/api/v1/logout", Some(&cookie), None, &[]).await;
+    assert_eq!(
+        call(&r, "GET", "/api/v1/scenes", Some(&cookie), None, &[])
+            .await
+            .0,
+        StatusCode::UNAUTHORIZED,
+        "not served from the cache"
     );
 }
 

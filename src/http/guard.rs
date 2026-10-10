@@ -1,5 +1,6 @@
 //! Guards in front of the scene and admin routes.
 
+use super::sessions::CHECK_TIMEOUT;
 use super::AppState;
 use crate::crypto;
 use crate::scene::{now_ms, LOCK};
@@ -15,6 +16,7 @@ use serde_json::json;
 use std::convert::Infallible;
 use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
+use std::time::Instant;
 
 pub(super) const SESSION_COOKIE: &str = "lorvaq_session";
 
@@ -46,18 +48,38 @@ pub(super) fn db_error(e: anyhow::Error) -> Response {
     )
 }
 
-/// Is there a valid admin session cookie? A database error counts as "no".
+/// Is there a valid admin session cookie? Sessions the database confirmed lately are
+/// trusted for a few seconds; when the database fails or is slow, a session that was
+/// confirmed before and has not expired keeps working.
 pub(super) async fn has_session(state: &AppState, jar: &CookieJar) -> bool {
     let (Some(live), Some(cookie)) = (&state.live, jar.get(SESSION_COOKIE)) else {
         return false;
     };
-    live.store
-        .session_valid(&crypto::token_hash(cookie.value()), now_ms())
-        .await
-        .unwrap_or_else(|e| {
-            tracing::warn!("session check failed: {e:#}");
+    let hash = crypto::token_hash(cookie.value());
+    let (now, at) = (now_ms(), Instant::now());
+    if live.sessions.lock().expect(LOCK).fresh(&hash, now, at) {
+        return true;
+    }
+    let checked = tokio::time::timeout(CHECK_TIMEOUT, live.store.session_expiry(&hash, now)).await;
+    let mut cache = live.sessions.lock().expect(LOCK);
+    match checked {
+        Ok(Ok(Some(expires_ms))) => {
+            cache.confirm(&hash, expires_ms, now, at);
+            true
+        }
+        Ok(Ok(None)) => {
+            cache.evict(&hash);
             false
-        })
+        }
+        Ok(Err(e)) => {
+            tracing::warn!("session check failed: {e:#}");
+            cache.known(&hash, now)
+        }
+        Err(_) => {
+            tracing::warn!("session check timed out");
+            cache.known(&hash, now)
+        }
+    }
 }
 
 pub(super) async fn viewer(
@@ -71,8 +93,9 @@ pub(super) async fn viewer(
         return next.run(req).await;
     };
     let access = live.access.read().expect(LOCK).clone();
-    let admin = has_session(&s, &jar).await;
-    if access.viewer_allowed(peer, req.headers(), admin) {
+    // The database is asked only when the mode alone does not let the request in.
+    let allowed = access.viewer_allowed(peer, req.headers(), false) || has_session(&s, &jar).await;
+    if allowed {
         next.run(req).await
     } else {
         json_error(StatusCode::UNAUTHORIZED, "sign in to see the scenes")
