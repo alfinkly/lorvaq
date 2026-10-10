@@ -44,16 +44,34 @@ fn short_password() -> Response {
     )
 }
 
-async fn hash_blocking(password: String) -> String {
+/// Password hashing is slow and memory-hungry: at most `ARGON_RUNS` run at once, the rest wait.
+async fn hash_blocking(live: &Live, password: String) -> String {
+    let _permit = live
+        .argon
+        .acquire()
+        .await
+        .expect("the semaphore is never closed");
     tokio::task::spawn_blocking(move || crypto::hash_password(&password))
         .await
         .expect("hashing does not panic")
 }
 
-async fn verify_blocking(password: String, hash: String) -> bool {
+async fn verify_blocking(live: &Live, password: String, hash: String) -> bool {
+    let _permit = live
+        .argon
+        .acquire()
+        .await
+        .expect("the semaphore is never closed");
     tokio::task::spawn_blocking(move || crypto::verify_password(&password, &hash))
         .await
         .unwrap_or(false)
+}
+
+fn too_many_attempts() -> Response {
+    json_error(
+        StatusCode::TOO_MANY_REQUESTS,
+        "too many attempts; try again in 15 minutes",
+    )
 }
 
 fn session_cookie(token: String, secure: bool) -> Cookie<'static> {
@@ -83,8 +101,8 @@ async fn start_session(live: &Live, jar: CookieJar, now: i64) -> Response {
         .into_response()
 }
 
-fn limiter_key(peer: Option<IpAddr>) -> IpAddr {
-    peer.unwrap_or(IpAddr::from([0, 0, 0, 0]))
+fn limiter_key(live: &Live, peer: Option<IpAddr>, headers: &HeaderMap) -> IpAddr {
+    live.access.read().expect(LOCK).limiter_key(peer, headers)
 }
 
 pub(super) async fn me(
@@ -112,37 +130,44 @@ pub(super) async fn setup(
     State(s): State<Arc<AppState>>,
     Peer(peer): Peer,
     jar: CookieJar,
+    headers: HeaderMap,
     Json(body): Json<SetupBody>,
 ) -> Response {
     let Some(live) = &s.live else {
         return json_error(StatusCode::NOT_FOUND, "demo mode has no admin");
     };
-    let (ip, now) = (limiter_key(peer), now_ms());
-    if live.limiter.lock().expect(LOCK).blocked(ip, now) {
-        return json_error(
-            StatusCode::TOO_MANY_REQUESTS,
-            "too many attempts; try again in 15 minutes",
-        );
+    let (key, now) = (limiter_key(live, peer, &headers), now_ms());
+    if !live.limiter.lock().expect(LOCK).try_begin(key, now) {
+        return too_many_attempts();
     }
+    // Not a guess at the code: give the attempt back.
+    let release = || live.limiter.lock().expect(LOCK).release(key);
     match live.store.admin_hash().await {
-        Ok(Some(_)) => return json_error(StatusCode::CONFLICT, "the admin already exists"),
+        Ok(Some(_)) => {
+            release();
+            return json_error(StatusCode::CONFLICT, "the admin already exists");
+        }
         Ok(None) => {}
-        Err(e) => return db_error(e),
+        Err(e) => {
+            release();
+            return db_error(e);
+        }
     }
     if body.password.chars().count() < MIN_PASSWORD {
+        release();
         return short_password();
     }
     match auth::check_setup_code(&live.store, &body.code, now).await {
-        Ok(true) => {}
-        Ok(false) => {
-            live.limiter.lock().expect(LOCK).fail(ip, now);
-            return json_error(StatusCode::FORBIDDEN, "wrong or expired setup code");
+        Ok(true) => live.limiter.lock().expect(LOCK).reset(key),
+        Ok(false) => return json_error(StatusCode::FORBIDDEN, "wrong or expired setup code"),
+        Err(e) => {
+            release();
+            return db_error(e);
         }
-        Err(e) => return db_error(e),
     }
     if let Err(e) = live
         .store
-        .set_admin_hash(&hash_blocking(body.password).await, now)
+        .set_admin_hash(&hash_blocking(live, body.password).await, now)
         .await
     {
         return db_error(e);
@@ -157,30 +182,31 @@ pub(super) async fn login(
     State(s): State<Arc<AppState>>,
     Peer(peer): Peer,
     jar: CookieJar,
+    headers: HeaderMap,
     Json(body): Json<LoginBody>,
 ) -> Response {
     let Some(live) = &s.live else {
         return json_error(StatusCode::NOT_FOUND, "demo mode has no admin");
     };
-    let (ip, now) = (limiter_key(peer), now_ms());
-    if live.limiter.lock().expect(LOCK).blocked(ip, now) {
-        return json_error(
-            StatusCode::TOO_MANY_REQUESTS,
-            "too many attempts; try again in 15 minutes",
-        );
+    let (key, now) = (limiter_key(live, peer, &headers), now_ms());
+    if !live.limiter.lock().expect(LOCK).try_begin(key, now) {
+        return too_many_attempts();
     }
     let hash = match live.store.admin_hash().await {
         Ok(Some(hash)) => hash,
-        Ok(None) => {
-            return json_error(StatusCode::CONFLICT, "no admin yet: finish the setup first")
+        other => {
+            // Not a password guess: give the attempt back.
+            live.limiter.lock().expect(LOCK).release(key);
+            return match other {
+                Ok(_) => json_error(StatusCode::CONFLICT, "no admin yet: finish the setup first"),
+                Err(e) => db_error(e),
+            };
         }
-        Err(e) => return db_error(e),
     };
-    if !verify_blocking(body.password, hash).await {
-        live.limiter.lock().expect(LOCK).fail(ip, now);
+    if !verify_blocking(live, body.password, hash).await {
         return json_error(StatusCode::UNAUTHORIZED, "wrong password");
     }
-    live.limiter.lock().expect(LOCK).reset(ip);
+    live.limiter.lock().expect(LOCK).reset(key);
     start_session(live, jar, now).await
 }
 
@@ -215,12 +241,12 @@ pub(super) async fn change_password(
         Ok(None) => return json_error(StatusCode::CONFLICT, "no admin yet"),
         Err(e) => return db_error(e),
     };
-    if !verify_blocking(body.current, hash).await {
+    if !verify_blocking(live, body.current, hash).await {
         return json_error(StatusCode::FORBIDDEN, "the current password is wrong");
     }
     if let Err(e) = live
         .store
-        .set_admin_hash(&hash_blocking(body.new).await, now_ms())
+        .set_admin_hash(&hash_blocking(live, body.new).await, now_ms())
         .await
     {
         return db_error(e);

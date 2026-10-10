@@ -519,3 +519,30 @@ async fn changing_the_password_signs_other_sessions_out() {
     .await;
     assert_eq!(status, StatusCode::OK);
 }
+
+#[tokio::test]
+async fn parallel_wrong_logins_are_counted_before_they_are_checked() {
+    let (r, _, _) = signed_in(Access::Admin).await;
+    let attempts = (0..10).map(|_| {
+        call(
+            &r,
+            "POST",
+            "/api/v1/login",
+            None,
+            Some(json!({ "password": "wrong wrong wrong" })),
+            &[],
+        )
+    });
+    let statuses: Vec<StatusCode> = futures::future::join_all(attempts)
+        .await
+        .into_iter()
+        .map(|(status, _, _)| status)
+        .collect();
+    let count = |code| statuses.iter().filter(|s| **s == code).count();
+    assert!(count(StatusCode::UNAUTHORIZED) <= 5, "{statuses:?}");
+    assert_eq!(
+        count(StatusCode::UNAUTHORIZED) + count(StatusCode::TOO_MANY_REQUESTS),
+        10,
+        "{statuses:?}"
+    );
+}

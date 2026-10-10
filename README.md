@@ -35,6 +35,13 @@ Settings decide who sees the scenes: anyone, people your reverse proxy signed
 in, or only the admin. Lost the password? `docker compose exec lorvaq /lorvaq
 admin reset-password` prints a new setup code and signs everybody out.
 
+Sign-in attempts are limited to five per address in 15 minutes (IPv6 clients
+count by their /64). Behind a reverse proxy that lorvaq does not trust (access
+mode other than `proxy`), every client arrives from the proxy's address, so all
+sign-in attempts share one allowance: a stranger who guesses wrong five times
+blocks the admin's sign-in for 15 minutes. In `proxy` mode lorvaq takes the client
+address from `X-Forwarded-For` when the request comes from a trusted proxy.
+
 ## Develop
 
     cargo run -- server --demo          # API and SSE on :8080

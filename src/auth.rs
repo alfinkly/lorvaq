@@ -7,7 +7,7 @@ use axum::http::{HeaderMap, HeaderName};
 use ipnet::IpNet;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::net::IpAddr;
+use std::net::{IpAddr, Ipv6Addr};
 
 pub const ACCESS_KEY: &str = "access";
 pub const SETUP_CODE_KEY: &str = "setup_code";
@@ -30,6 +30,28 @@ pub enum Access {
     /// Only the signed-in admin.
     #[default]
     Admin,
+}
+
+/// Header a reverse proxy appends the client address to.
+const FORWARDED_FOR: &str = "x-forwarded-for";
+
+fn is_trusted(trusted: &[String], ip: IpAddr) -> bool {
+    trusted
+        .iter()
+        .filter_map(|t| parse_net(t))
+        .any(|n| n.contains(&ip))
+}
+
+/// IPv6 clients usually own a whole /64, so they count as one address.
+fn fold_v6(ip: IpAddr) -> IpAddr {
+    match ip {
+        IpAddr::V6(v6) => {
+            let mut octets = v6.octets();
+            octets[8..].fill(0);
+            IpAddr::V6(Ipv6Addr::from(octets))
+        }
+        v4 => v4,
+    }
 }
 
 fn parse_net(s: &str) -> Option<IpNet> {
@@ -63,12 +85,7 @@ impl Access {
             Access::Open => true,
             Access::Admin => false,
             Access::Proxy { header, trusted } => {
-                let from_proxy = peer.is_some_and(|ip| {
-                    trusted
-                        .iter()
-                        .filter_map(|t| parse_net(t))
-                        .any(|n| n.contains(&ip))
-                });
+                let from_proxy = peer.is_some_and(|ip| is_trusted(trusted, ip));
                 from_proxy
                     && headers
                         .get(header.as_str())
@@ -78,32 +95,71 @@ impl Access {
     }
 }
 
+impl Access {
+    /// Whom a sign-in attempt counts against. Behind a trusted proxy that is the
+    /// rightmost `X-Forwarded-For` hop that is not itself a trusted proxy; otherwise
+    /// the TCP peer. IPv6 addresses count by their /64.
+    pub fn limiter_key(&self, peer: Option<IpAddr>, headers: &HeaderMap) -> IpAddr {
+        let peer_key = fold_v6(peer.unwrap_or(IpAddr::from([0, 0, 0, 0])));
+        let (Access::Proxy { trusted, .. }, Some(peer)) = (self, peer) else {
+            return peer_key;
+        };
+        if !is_trusted(trusted, peer) {
+            return peer_key;
+        }
+        for value in headers.get_all(FORWARDED_FOR).iter().rev() {
+            let Ok(text) = value.to_str() else {
+                return peer_key;
+            };
+            for hop in text.rsplit(',') {
+                let Ok(ip) = hop.trim().parse::<IpAddr>() else {
+                    return peer_key;
+                };
+                let ip = ip.to_canonical();
+                if !is_trusted(trusted, ip) {
+                    return fold_v6(ip);
+                }
+            }
+        }
+        peer_key
+    }
+}
+
+/// Five attempts per address in 15 minutes. An attempt is counted when it starts,
+/// before the expensive password check, and forgotten once it succeeds.
 #[derive(Default)]
 pub struct LoginLimiter {
-    failures: HashMap<IpAddr, Vec<i64>>,
+    attempts: HashMap<IpAddr, Vec<i64>>,
 }
 
 impl LoginLimiter {
-    pub fn blocked(&mut self, ip: IpAddr, now_ms: i64) -> bool {
-        match self.failures.get_mut(&ip) {
-            Some(times) => {
-                times.retain(|t| now_ms - t < WINDOW_MS);
-                times.len() >= MAX_FAILURES
-            }
-            None => false,
-        }
-    }
-
-    pub fn fail(&mut self, ip: IpAddr, now_ms: i64) {
-        if self.failures.len() >= MAX_TRACKED {
-            self.failures
+    /// Counts an attempt; false (and nothing counted) when the address is used up.
+    pub fn try_begin(&mut self, key: IpAddr, now_ms: i64) -> bool {
+        if self.attempts.len() >= MAX_TRACKED {
+            self.attempts
                 .retain(|_, times| times.last().is_some_and(|t| now_ms - t < WINDOW_MS));
         }
-        self.failures.entry(ip).or_default().push(now_ms);
+        let times = self.attempts.entry(key).or_default();
+        times.retain(|t| now_ms - t < WINDOW_MS);
+        if times.len() >= MAX_FAILURES {
+            return false;
+        }
+        times.push(now_ms);
+        true
     }
 
-    pub fn reset(&mut self, ip: IpAddr) {
-        self.failures.remove(&ip);
+    /// Takes back the latest attempt: it was not a password guess (bad input, database down).
+    pub fn release(&mut self, key: IpAddr) {
+        if let Some(times) = self.attempts.get_mut(&key) {
+            times.pop();
+            if times.is_empty() {
+                self.attempts.remove(&key);
+            }
+        }
+    }
+
+    pub fn reset(&mut self, key: IpAddr) {
+        self.attempts.remove(&key);
     }
 }
 
@@ -240,20 +296,121 @@ mod tests {
     }
 
     #[test]
-    fn five_failures_in_fifteen_minutes_block_the_address() {
+    fn five_attempts_in_fifteen_minutes_block_the_address() {
         let mut l = LoginLimiter::default();
         let a: IpAddr = "10.0.0.1".parse().unwrap();
         let b: IpAddr = "10.0.0.2".parse().unwrap();
         for t in 0..5 {
-            assert!(!l.blocked(a, t));
-            l.fail(a, t);
+            assert!(l.try_begin(a, t), "attempt {t}");
         }
-        assert!(l.blocked(a, 10));
-        assert!(!l.blocked(b, 10), "other addresses are fine");
-        assert!(!l.blocked(a, 15 * 60 * 1000 + 5), "the window slides");
-        l.fail(a, 0);
+        assert!(!l.try_begin(a, 10), "the sixth is refused");
+        assert!(l.try_begin(b, 10), "other addresses are fine");
+        assert!(l.try_begin(a, 15 * 60 * 1000 + 5), "the window slides");
         l.reset(a);
-        assert!(!l.blocked(a, 1));
+        assert!(l.try_begin(a, 1));
+    }
+
+    #[test]
+    fn attempts_are_counted_before_they_finish() {
+        // Five attempts still in flight (none has failed or succeeded yet) use the address up.
+        let mut l = LoginLimiter::default();
+        let a: IpAddr = "10.0.0.1".parse().unwrap();
+        let started = (0..6).filter(|_| l.try_begin(a, 1)).count();
+        assert_eq!(started, 5, "the sixth concurrent attempt is blocked");
+        l.release(a);
+        assert!(l.try_begin(a, 2), "a released attempt frees a place");
+        assert!(!l.try_begin(a, 2));
+        l.reset(a);
+        assert!(l.try_begin(a, 3), "success clears the address");
+    }
+
+    fn forwarded(value: &str) -> HeaderMap {
+        let mut h = HeaderMap::new();
+        h.insert("x-forwarded-for", HeaderValue::from_str(value).unwrap());
+        h
+    }
+
+    #[test]
+    fn limiter_key_without_a_proxy_is_the_peer() {
+        let h = forwarded("203.0.113.7");
+        let peer = ip("10.0.0.1");
+        assert_eq!(Access::Admin.limiter_key(peer, &h), peer.unwrap());
+        assert_eq!(Access::Open.limiter_key(peer, &h), peer.unwrap());
+        assert_eq!(
+            Access::Admin.limiter_key(None, &h),
+            IpAddr::from([0, 0, 0, 0])
+        );
+    }
+
+    #[test]
+    fn limiter_key_behind_a_trusted_proxy_is_the_rightmost_untrusted_hop() {
+        let p = proxy(&["10.0.0.0/8"]);
+        let peer = ip("10.0.0.1");
+        let key = |h: &HeaderMap| p.limiter_key(peer, h);
+        assert_eq!(
+            key(&forwarded("198.51.100.1, 203.0.113.7")),
+            ip("203.0.113.7").unwrap()
+        );
+        assert_eq!(
+            key(&forwarded("198.51.100.1, 203.0.113.7, 10.0.0.2")),
+            ip("203.0.113.7").unwrap(),
+            "trusted hops are skipped"
+        );
+        assert_eq!(
+            key(&forwarded("evil, 203.0.113.7")),
+            ip("203.0.113.7").unwrap(),
+            "what the client forges to the left does not matter"
+        );
+        let mut two = forwarded("198.51.100.1");
+        two.append("x-forwarded-for", HeaderValue::from_static("203.0.113.7"));
+        assert_eq!(
+            key(&two),
+            ip("203.0.113.7").unwrap(),
+            "several header lines"
+        );
+        assert_eq!(key(&HeaderMap::new()), peer.unwrap(), "no header");
+        assert_eq!(
+            key(&forwarded("10.0.0.5, 10.0.0.6")),
+            peer.unwrap(),
+            "all trusted"
+        );
+        assert_eq!(
+            key(&forwarded("203.0.113.7, junk")),
+            peer.unwrap(),
+            "unreadable hop"
+        );
+        assert_eq!(
+            key(&forwarded("::ffff:203.0.113.7")),
+            ip("203.0.113.7").unwrap(),
+            "mapped addresses count as IPv4"
+        );
+    }
+
+    #[test]
+    fn limiter_key_ignores_the_header_from_a_stranger() {
+        let p = proxy(&["10.0.0.0/8"]);
+        let stranger = ip("192.0.2.9");
+        assert_eq!(
+            p.limiter_key(stranger, &forwarded("203.0.113.7")),
+            stranger.unwrap()
+        );
+    }
+
+    #[test]
+    fn limiter_key_folds_ipv6_to_the_64() {
+        let a = ip("2001:db8:1:2:aaaa:bbbb:cccc:dddd");
+        let b = ip("2001:db8:1:2:1::1");
+        let other = ip("2001:db8:1:3::1");
+        let key = |p| Access::Open.limiter_key(p, &HeaderMap::new());
+        assert_eq!(key(a), key(b));
+        assert_ne!(key(a), key(other));
+        assert_eq!(key(a), ip("2001:db8:1:2::").unwrap());
+        // Behind a proxy the forwarded client is folded too.
+        let p = proxy(&["10.0.0.0/8"]);
+        assert_eq!(
+            p.limiter_key(ip("10.0.0.1"), &forwarded("2001:db8:1:2:ffff::9")),
+            ip("2001:db8:1:2::").unwrap()
+        );
     }
 
     #[test]

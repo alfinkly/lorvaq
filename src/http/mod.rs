@@ -27,9 +27,13 @@ use serde_json::{json, Value};
 use std::convert::Infallible;
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
+use tokio::sync::Semaphore;
 use tokio_stream::wrappers::BroadcastStream;
 
 pub use sessions::SessionCache;
+
+/// How many password hash/verify runs may go at once.
+const ARGON_RUNS: usize = 2;
 
 pub struct AppState {
     pub scenes: Vec<SceneHandle>,
@@ -47,6 +51,8 @@ pub struct Live {
     pub history: Vec<(&'static str, Arc<Mutex<HistoryStatus>>)>,
     /// Admin sessions the database confirmed lately.
     pub sessions: Mutex<SessionCache>,
+    /// Caps concurrent password hash/verify runs (each takes about 19 MiB).
+    pub argon: Semaphore,
 }
 
 impl Live {
@@ -65,6 +71,7 @@ impl Live {
             limiter: Mutex::new(LoginLimiter::default()),
             history,
             sessions: Mutex::new(SessionCache::default()),
+            argon: Semaphore::new(ARGON_RUNS),
         }
     }
 }
