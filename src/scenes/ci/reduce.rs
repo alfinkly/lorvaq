@@ -270,7 +270,10 @@ impl CiScene {
                     return (slot.clone(), "running");
                 }
                 if let Some(e) = world.entity(&job_id(job.id)) {
-                    if e.place.starts_with("slot:") && self.slot_online(&e.place) {
+                    let taken = slots
+                        .values()
+                        .any(|(s, r)| *s == e.place && r.job_id != job.id);
+                    if e.place.starts_with("slot:") && self.slot_online(&e.place) && !taken {
                         return (e.place.clone(), "running");
                     }
                 }
@@ -1034,6 +1037,34 @@ mod tests {
             h.place_of(7).as_deref(),
             Some("slot:a/p/0"),
             "no flicker to the process row"
+        );
+    }
+
+    #[test]
+    fn job_does_not_keep_a_slot_the_agent_gives_to_another_job() {
+        let mut h = Harness::new(CiSettings::default());
+        h.feed(agent(
+            "a",
+            "host",
+            vec![process("p", Some(2), vec![slot(0, 1, 1, 1.0, 3.0)])],
+        ));
+        h.feed(jobs(vec![running(1, "g/app", 1)], vec![]));
+        assert_eq!(h.place_of(1).as_deref(), Some("slot:a/p/0"));
+        // Job 1's container is gone and job 2 took slot 0, but GitLab still says both run.
+        h.feed(agent(
+            "a",
+            "host",
+            vec![process("p", Some(2), vec![slot(0, 2, 1, 1.0, 3.0)])],
+        ));
+        h.feed(jobs(
+            vec![running(1, "g/app", 1), running(2, "g/app", 1)],
+            vec![],
+        ));
+        assert_eq!(h.place_of(2).as_deref(), Some("slot:a/p/0"));
+        assert_eq!(
+            h.place_of(1).as_deref(),
+            Some("process:a/p"),
+            "the old job must leave the slot the agent reports as taken"
         );
     }
 
