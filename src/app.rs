@@ -1,12 +1,22 @@
-//! Wires scenes, sources and HTTP into a running server.
+//! Wires scenes, sources, storage and HTTP into a running server.
 
-use crate::http::{router, AppState};
-use crate::scene::{self, SceneHandle};
+use crate::auth::{self, Access, LoginLimiter};
+use crate::cli::{DbArgs, ServerArgs};
+use crate::crypto::SecretBox;
+use crate::history::{self, HistoryStatus};
+use crate::http::{router, AppState, Live};
+use crate::scene::{self, now_ms, SceneHandle};
+use crate::scenes::ci::settings::CiSettings;
 use crate::scenes::ci::CiScene;
+use crate::store::Store;
+use anyhow::Context;
 use futures::FutureExt;
 use std::net::SocketAddr;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
+
+/// Event streams never end on their own; after a stop signal they get this long.
+const STREAM_GRACE: Duration = Duration::from_secs(2);
 
 /// The CI scene fed by the simulator. Needs a tokio runtime.
 pub fn demo_scenes() -> anyhow::Result<Vec<SceneHandle>> {
@@ -16,14 +26,98 @@ pub fn demo_scenes() -> anyhow::Result<Vec<SceneHandle>> {
     Ok(vec![handle])
 }
 
-pub async fn serve(listen: SocketAddr, scenes: Vec<SceneHandle>) -> anyhow::Result<()> {
-    let app = router(Arc::new(AppState::demo(scenes)));
+async fn live_scenes(store: &Store) -> anyhow::Result<Vec<SceneHandle>> {
+    let stored = store.scene_settings("ci").await?;
+    let settings: CiSettings = match stored.map(serde_json::from_value) {
+        Some(Ok(s)) => s,
+        Some(Err(e)) => {
+            tracing::warn!("stored CI settings are unreadable ({e}); using defaults");
+            CiSettings::default()
+        }
+        None => CiSettings::default(),
+    };
+    let ci = CiScene::new(settings).or_else(|e| {
+        tracing::warn!("stored CI settings are invalid ({e:#}); using defaults");
+        CiScene::new(CiSettings::default())
+    })?;
+    // Sources arrive with the next plans; until then the scene only ticks.
+    let (handle, _inputs) = scene::spawn(ci, Duration::from_secs(1));
+    Ok(vec![handle])
+}
+
+/// Everything the live server needs, from an open store.
+pub async fn live_state(
+    store: Store,
+    secrets: SecretBox,
+    public_url: Option<&str>,
+) -> anyhow::Result<AppState> {
+    let scenes = live_scenes(&store).await?;
+    let history = scenes
+        .iter()
+        .map(|h| {
+            let status = Arc::new(Mutex::new(HistoryStatus::default()));
+            history::spawn_writer(store.clone(), h.clone(), status.clone());
+            (h.id, status)
+        })
+        .collect();
+    history::spawn_pruner(store.clone());
+    auth::announce_setup_code(&store, now_ms()).await?;
+    let access = store
+        .setting::<Access>(auth::ACCESS_KEY)
+        .await?
+        .unwrap_or_default();
+    let cookie_secure = public_url.is_some_and(|u| u.starts_with("https://"));
+    if !cookie_secure {
+        tracing::warn!("LORVAQ_PUBLIC_URL is not an https URL, so the session cookie goes without the Secure flag; set it in production");
+    }
+    let live = Live {
+        store,
+        secrets,
+        cookie_secure,
+        access: RwLock::new(access),
+        limiter: Mutex::new(LoginLimiter::default()),
+        history,
+    };
+    Ok(AppState {
+        scenes,
+        live: Some(live),
+    })
+}
+
+pub async fn run_server(args: ServerArgs) -> anyhow::Result<()> {
+    if args.demo {
+        return serve(args.listen, AppState::demo(demo_scenes()?)).await;
+    }
+    let url = args
+        .db
+        .database_url
+        .context("DATABASE_URL is required (or run with --demo)")?;
+    let key = args
+        .secret_key
+        .context("LORVAQ_SECRET_KEY is required: create one with `lorvaq keygen`")?;
+    let secrets = SecretBox::from_base64(&key)?;
+    let store = Store::connect(&url).await?;
+    let state = live_state(store, secrets, args.public_url.as_deref()).await?;
+    serve(args.listen, state).await
+}
+
+/// `lorvaq admin reset-password`: works while the server runs.
+pub async fn reset_password(db: DbArgs) -> anyhow::Result<()> {
+    let url = db.database_url.context("DATABASE_URL is required")?;
+    let store = Store::connect(&url).await?;
+    store.reset_admin().await?;
+    let code = auth::issue_setup_code(&store, now_ms()).await?;
+    println!("The admin password is removed and everybody is signed out.");
+    println!("Open lorvaq and enter this one-time setup code (valid for 24 hours): {code}");
+    Ok(())
+}
+
+pub async fn serve(listen: SocketAddr, state: AppState) -> anyhow::Result<()> {
+    let app = router(Arc::new(state)).into_make_service_with_connect_info::<SocketAddr>();
     let listener = tokio::net::TcpListener::bind(listen).await?;
     tracing::info!(%listen, "lorvaq is listening");
     let signal = shutdown_signal().shared();
     let server = axum::serve(listener, app).with_graceful_shutdown(signal.clone());
-    // Event streams never end on their own, so graceful shutdown would wait for
-    // them forever (and docker would kill us after 10 s): give them a moment, then go.
     let deadline = async {
         signal.await;
         tokio::time::sleep(STREAM_GRACE).await;
@@ -34,8 +128,6 @@ pub async fn serve(listen: SocketAddr, scenes: Vec<SceneHandle>) -> anyhow::Resu
     }
     Ok(())
 }
-
-const STREAM_GRACE: Duration = Duration::from_secs(2);
 
 async fn shutdown_signal() {
     let ctrl_c = async {

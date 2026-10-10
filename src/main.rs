@@ -1,6 +1,6 @@
 use clap::Parser;
 use lorvaq::app;
-use lorvaq::cli::{Cli, Command};
+use lorvaq::cli::{AdminAction, Cli, Command};
 use lorvaq::crypto::SecretBox;
 use tracing_subscriber::EnvFilter;
 
@@ -16,15 +16,10 @@ async fn main() -> anyhow::Result<()> {
             println!("{}", SecretBox::generate_key());
             Ok(())
         }
-        Command::Server(args) => {
-            anyhow::ensure!(
-                args.demo,
-                "the live mode is wired in a later step of this plan; use --demo"
-            );
-            app::serve(args.listen, app::demo_scenes()?).await
-        }
-        Command::Admin { .. } => {
-            anyhow::bail!("admin commands are wired in a later step of this plan")
-        }
+        Command::Server(args) => app::run_server(args).await,
+        Command::Admin {
+            action: AdminAction::ResetPassword,
+            db,
+        } => app::reset_password(db).await,
     }
 }
