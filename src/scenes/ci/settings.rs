@@ -18,6 +18,8 @@ pub struct CiSettings {
     pub finished_linger_ms: i64,
     pub missing_grace_ms: i64,
     pub project_idle_ms: i64,
+    /// A project without active jobs this long gives its own place to a newcomer.
+    pub project_quiet_ms: i64,
 }
 
 impl Default for CiSettings {
@@ -30,6 +32,7 @@ impl Default for CiSettings {
             finished_linger_ms: 3_000,
             missing_grace_ms: 120_000,
             project_idle_ms: 6 * 3600 * 1000,
+            project_quiet_ms: 15 * 60 * 1000,
         }
     }
 }
@@ -107,6 +110,7 @@ mod tests {
         assert_eq!(s.finished_linger_ms, 3_000);
         assert_eq!(s.missing_grace_ms, 120_000);
         assert_eq!(s.project_idle_ms, 6 * 3600 * 1000);
+        assert_eq!(s.project_quiet_ms, 15 * 60 * 1000);
         assert!(s.exits.is_empty());
     }
 

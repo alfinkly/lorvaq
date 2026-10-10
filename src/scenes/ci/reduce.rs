@@ -152,6 +152,24 @@ impl CiScene {
         now: i64,
         out: &mut Vec<Change>,
     ) -> String {
+        if !self.projects.contains_key(path) && self.projects.len() >= self.settings.max_projects {
+            // Full: the quietest empty project gives its place to this newcomer.
+            let quiet = self.settings.project_quiet_ms;
+            let victim = self
+                .projects
+                .iter()
+                .filter(|(p, last)| {
+                    now - **last >= quiet && !world.entities().any(|e| e.place == project_id(p))
+                })
+                .min_by_key(|(_, last)| **last)
+                .map(|(p, _)| p.clone());
+            if let Some(victim) = victim {
+                self.projects.remove(&victim);
+                out.push(Change::RemovePlace {
+                    id: project_id(&victim),
+                });
+            }
+        }
         if self.projects.contains_key(path) || self.projects.len() < self.settings.max_projects {
             self.projects.insert(path.to_string(), now);
             let id = project_id(path);
@@ -334,9 +352,12 @@ impl CiScene {
                 });
             }
             let eid = job_id(job.id);
-            let born_at = self.project_place(world, &job.project, now, out);
+            if let Some(last) = self.projects.get_mut(&job.project) {
+                *last = now;
+            }
             match world.entity(&eid) {
                 None => {
+                    let born_at = self.project_place(world, &job.project, now, out);
                     let entity = Entity {
                         id: eid.clone(),
                         kind: "job".into(),
@@ -808,6 +829,70 @@ mod tests {
             "{born:?}"
         );
         assert_eq!(h.world.place(OTHER_PROJECT).unwrap().label, "other");
+    }
+
+    #[test]
+    fn busy_newcomer_gets_its_own_place_once_an_old_project_goes_quiet() {
+        let mut h = Harness::new(CiSettings {
+            max_projects: 2,
+            project_quiet_ms: 10_000,
+            finished_linger_ms: 1_000,
+            ..CiSettings::default()
+        });
+        h.feed(jobs(
+            vec![
+                job(1, "g/a", JobStatus::Pending, &[]),
+                job(2, "g/b", JobStatus::Pending, &[]),
+                job(3, "g/c", JobStatus::Pending, &[]),
+            ],
+            vec![],
+        ));
+        assert!(h.world.place(OTHER_PROJECT).is_some(), "g/c starts folded");
+        // g/a finishes and goes quiet; g/b stays busy, g/c keeps running jobs.
+        h.feed(jobs(
+            vec![
+                job(2, "g/b", JobStatus::Pending, &[]),
+                job(3, "g/c", JobStatus::Pending, &[]),
+            ],
+            vec![job(1, "g/a", JobStatus::Canceled, &[])],
+        ));
+        h.tick(1_000);
+        // Not quiet long enough yet: the newcomer is still folded.
+        let ch = h.feed(jobs(
+            vec![
+                job(2, "g/b", JobStatus::Pending, &[]),
+                job(3, "g/c", JobStatus::Pending, &[]),
+                job(4, "g/c", JobStatus::Pending, &[]),
+            ],
+            vec![],
+        ));
+        assert!(
+            ch.iter()
+                .any(|c| matches!(c, Change::Appear { entity } if entity.id == "job:4" && entity.place == OTHER_PROJECT)),
+            "{ch:?}"
+        );
+        h.tick(10_000);
+        let ch = h.feed(jobs(
+            vec![
+                job(2, "g/b", JobStatus::Pending, &[]),
+                job(3, "g/c", JobStatus::Pending, &[]),
+                job(4, "g/c", JobStatus::Pending, &[]),
+                job(5, "g/c", JobStatus::Pending, &[]),
+            ],
+            vec![],
+        ));
+        assert!(
+            ch.iter()
+                .any(|c| matches!(c, Change::Appear { entity } if entity.id == "job:5" && entity.place == "project:g/c")),
+            "{ch:?}"
+        );
+        assert!(h.world.place("project:g/a").is_none());
+        assert!(h.world.place("project:g/b").is_some());
+        assert!(
+            !ch.iter()
+                .any(|c| matches!(c, Change::Move { id, .. } if id == "job:3" || id == "job:4")),
+            "existing tokens must not jump: {ch:?}"
+        );
     }
 
     #[test]
