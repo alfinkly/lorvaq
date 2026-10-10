@@ -101,13 +101,17 @@ fn session_cookie(token: String, secure: bool) -> Cookie<'static> {
 async fn start_session(live: &Live, jar: CookieJar, now: i64) -> Response {
     let token = crypto::random_token();
     let hash = crypto::token_hash(&token);
+    let began = live.sessions.lock().expect(LOCK).generation();
     if let Err(e) = live.store.create_session(&hash, now, SESSION_TTL_MS).await {
         return db_error(e);
     }
-    live.sessions
-        .lock()
-        .expect(LOCK)
-        .confirm(&hash, now + SESSION_TTL_MS, now, Instant::now());
+    live.sessions.lock().expect(LOCK).confirm(
+        &hash,
+        now + SESSION_TTL_MS,
+        now,
+        Instant::now(),
+        began,
+    );
     (
         jar.add(session_cookie(token, live.cookie_secure)),
         Json(json!({ "ok": true })),
@@ -227,7 +231,10 @@ pub(super) async fn logout(State(s): State<Arc<AppState>>, jar: CookieJar) -> Re
     if let (Some(live), Some(cookie)) = (&s.live, jar.get(SESSION_COOKIE)) {
         let hash = crypto::token_hash(cookie.value());
         live.sessions.lock().expect(LOCK).evict(&hash);
-        if let Err(e) = live.store.delete_session(&hash).await {
+        let deleted = live.store.delete_session(&hash).await;
+        // Again once the row is gone: a check that began in between may have read it.
+        live.sessions.lock().expect(LOCK).evict(&hash);
+        if let Err(e) = deleted {
             return db_error(e);
         }
     }
@@ -268,8 +275,11 @@ pub(super) async fn change_password(
         .get(SESSION_COOKIE)
         .map(|c| crypto::token_hash(c.value()))
         .expect("the admin guard checked the cookie");
-    live.sessions.lock().expect(LOCK).evict_except(&mine);
-    if let Err(e) = live.store.delete_other_sessions(&mine).await {
+    live.sessions.lock().expect(LOCK).evict_all_except(&mine);
+    let deleted = live.store.delete_other_sessions(&mine).await;
+    // Again once the rows are gone: a check that began in between may have read them.
+    live.sessions.lock().expect(LOCK).evict_all_except(&mine);
+    if let Err(e) = deleted {
         return db_error(e);
     }
     Json(json!({ "ok": true })).into_response()

@@ -50,21 +50,25 @@ pub(super) fn db_error(e: anyhow::Error) -> Response {
 
 /// Is there a valid admin session cookie? Sessions the database confirmed lately are
 /// trusted for a few seconds; when the database fails or is slow, a session that was
-/// confirmed before and has not expired keeps working.
+/// confirmed within the last hour and has not expired keeps working.
 pub(super) async fn has_session(state: &AppState, jar: &CookieJar) -> bool {
     let (Some(live), Some(cookie)) = (&state.live, jar.get(SESSION_COOKIE)) else {
         return false;
     };
     let hash = crypto::token_hash(cookie.value());
     let (now, at) = (now_ms(), Instant::now());
-    if live.sessions.lock().expect(LOCK).fresh(&hash, now, at) {
-        return true;
-    }
+    let began = {
+        let cache = live.sessions.lock().expect(LOCK);
+        if cache.fresh(&hash, now, at) {
+            return true;
+        }
+        cache.generation()
+    };
     let checked = tokio::time::timeout(CHECK_TIMEOUT, live.store.session_expiry(&hash, now)).await;
     let mut cache = live.sessions.lock().expect(LOCK);
     match checked {
         Ok(Ok(Some(expires_ms))) => {
-            cache.confirm(&hash, expires_ms, now, at);
+            cache.confirm(&hash, expires_ms, now, at, began);
             true
         }
         Ok(Ok(None)) => {
@@ -73,11 +77,11 @@ pub(super) async fn has_session(state: &AppState, jar: &CookieJar) -> bool {
         }
         Ok(Err(e)) => {
             tracing::warn!("session check failed: {e:#}");
-            cache.known(&hash, now)
+            cache.known(&hash, now, at)
         }
         Err(_) => {
             tracing::warn!("session check timed out");
-            cache.known(&hash, now)
+            cache.known(&hash, now, at)
         }
     }
 }
