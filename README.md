@@ -64,4 +64,7 @@ Design: `docs/design/`.
 
 ## License
 
-MIT
+Copyright (C) 2026 Alimzhan Kangerey.
+
+Licensed under the GNU Affero General Public License v3.0 only
+(`AGPL-3.0-only`). See [LICENSE](LICENSE).

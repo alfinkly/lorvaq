@@ -3,7 +3,7 @@ name = "lorvaq"
 version = "0.1.0"
 edition = "2021"
 description = "Live scenes for real-time monitoring: see things move through your system"
-license = "MIT"
+license = "AGPL-3.0-only"
 repository = "https://github.com/alfinkly/lorvaq"
 
 [dependencies]
