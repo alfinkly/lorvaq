@@ -5,8 +5,9 @@ lorvaq shows **things in places that move**: a CI job travels from the queue
 into a runner slot, its memory fills the slot, an OOM flashes red, a build flies
 off to the registry. You see not only *how much* but *why and where*.
 
-Status: early. The CI scene runs on real GitLab jobs and runners, or on a
-built-in simulator; the runner agent (memory, disk, slots, OOM) comes next.
+Status: early. The CI scene runs on real GitLab jobs and runners (with an agent
+on each runner host for slots, memory, disk and OOM kills), or on a built-in
+simulator.
 
 ## Try it
 
@@ -65,6 +66,32 @@ seconds and runners every minute. If GitLab stops answering, the scene shows a
 "data is old" banner after 10 seconds.
 
 GitLab with a certificate from a private CA is not supported yet.
+
+## Add runner hosts
+
+GitLab knows which jobs run; only the runner host knows how much memory they
+take. In Settings → Hosts name a host and press "Add host": lorvaq shows a
+`docker run … lorvaq agent` command with a one-time join token. Run it on the
+runner host, in the same docker daemon as gitlab-runner (for rootless docker,
+as the runner's user). The token is shown once and stored only as a hash;
+removing the host disconnects its agent at once.
+
+The agent only reads the docker daemon (list, stats, inspect, events) and opens
+no port: it connects out to `LORVAQ_SERVER` over WebSocket and reports every 2
+seconds. It needs to reach that address, so allow it in egress rules of the
+runner host. It finds job containers by gitlab-runner's labels
+(`com.gitlab.gitlab-runner.job.id`, `…type`, `…runner.id`) and gives each
+running job a slot of the process.
+
+The slot count comes from the scene settings (`capacities`, `default_capacity`)
+unless the agent can read gitlab-runner's metrics: set `listen_address` in the
+runner's `config.toml`, run the agent with `--network host` and add
+`-e LORVAQ_RUNNER_METRICS=http://127.0.0.1:9252/metrics`. Then lorvaq also
+knows each registration's `limit` and shows jobs waiting for it.
+
+Mounting the docker socket gives the agent full access to the daemon, read-only
+mount or not; lorvaq's agent never uses more than reading, but treat its image
+like any container you give the socket to.
 
 ## Behind a reverse proxy
 
