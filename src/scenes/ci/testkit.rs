@@ -5,7 +5,6 @@ use super::reduce::{job_id, CiScene};
 use super::settings::CiSettings;
 use crate::scene::Scene;
 use crate::world::{Change, World};
-use std::collections::BTreeMap;
 
 const GIB: f64 = (1u64 << 30) as f64;
 
@@ -104,8 +103,8 @@ pub fn process(key: &str, concurrent: Option<u32>, slots: Vec<SlotReport>) -> Pr
         key: key.into(),
         concurrent,
         runner_ids: vec![],
-        limits: BTreeMap::new(),
         slots,
+        ..ProcessReport::default()
     }
 }
 
@@ -117,5 +116,6 @@ pub fn slot(n: u32, job: u64, runner: u64, mem_gib: f64, limit_gib: f64) -> Slot
         mem_bytes: (mem_gib * GIB) as u64,
         mem_limit_bytes: Some((limit_gib * GIB) as u64),
         has_service: false,
+        ..SlotReport::default()
     }
 }

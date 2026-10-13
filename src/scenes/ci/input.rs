@@ -73,7 +73,7 @@ pub struct AgentReport {
 }
 
 /// One gitlab-runner process: its registrations share its slots.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct ProcessReport {
     pub key: String,
     /// `concurrent` from the runner's metrics, when known.
@@ -83,15 +83,24 @@ pub struct ProcessReport {
     /// Per-registration `limit`, when known.
     #[serde(default)]
     pub limits: BTreeMap<u64, u32>,
+    /// Per-registration `limit` by short runner token, as the runner's metrics name them;
+    /// the scene turns them into `limits` once it learns which runner a token is.
+    #[serde(default)]
+    pub token_limits: BTreeMap<String, u32>,
     /// Occupied slots only.
     pub slots: Vec<SlotReport>,
 }
 
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct SlotReport {
     pub slot: u32,
     pub job_id: u64,
+    /// GitLab's runner id; 0 when the agent does not know it (the scene fills it in).
+    #[serde(default)]
     pub runner_id: u64,
+    /// The short runner token from the container labels; empty when unknown.
+    #[serde(default)]
+    pub runner_token: String,
     pub mem_bytes: u64,
     pub mem_limit_bytes: Option<u64>,
     pub has_service: bool,
@@ -144,7 +153,9 @@ mod tests {
                     mem_bytes: 10,
                     mem_limit_bytes: Some(20),
                     has_service: true,
+                    ..SlotReport::default()
                 }],
+                ..ProcessReport::default()
             }],
             disk: Some(DiskUsage {
                 used_bytes: 1,

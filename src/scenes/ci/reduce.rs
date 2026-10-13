@@ -83,6 +83,8 @@ pub struct CiScene {
     /// Latest report per agent; offline agents keep theirs so processes stay known.
     agents: BTreeMap<String, AgentReport>,
     offline: BTreeSet<String>,
+    /// Short runner token (from container labels) → GitLab runner id, learnt from jobs.
+    tokens: BTreeMap<String, u64>,
     oom: BTreeSet<u64>,
     finished: BTreeMap<u64, i64>,
     missing: BTreeMap<u64, i64>,
@@ -105,6 +107,7 @@ impl CiScene {
             projects: BTreeMap::new(),
             agents: BTreeMap::new(),
             offline: BTreeSet::new(),
+            tokens: BTreeMap::new(),
             oom: BTreeSet::new(),
             finished: BTreeMap::new(),
             missing: BTreeMap::new(),
@@ -464,7 +467,45 @@ impl CiScene {
         }
     }
 
-    fn on_agent(&mut self, world: &World, report: AgentReport, now: i64, out: &mut Vec<Change>) {
+    /// An agent knows only short runner tokens; GitLab says which runner runs each job.
+    /// Fills in runner ids of slots, learns token → id, and turns per-token limits into
+    /// per-runner ones.
+    fn resolve_runners(&mut self, report: &mut AgentReport) {
+        for p in &mut report.processes {
+            for s in &mut p.slots {
+                if s.runner_id == 0 {
+                    if let Some(id) = self.active.get(&s.job_id).and_then(|j| j.runner_id) {
+                        s.runner_id = id;
+                    }
+                }
+                if s.runner_id != 0 && !s.runner_token.is_empty() {
+                    self.tokens.insert(s.runner_token.clone(), s.runner_id);
+                }
+                if s.runner_id == 0 {
+                    if let Some(id) = self.tokens.get(&s.runner_token) {
+                        s.runner_id = *id;
+                    }
+                }
+            }
+            for (token, limit) in &p.token_limits {
+                if let Some(id) = self.tokens.get(token) {
+                    p.limits.entry(*id).or_insert(*limit);
+                    if !p.runner_ids.contains(id) {
+                        p.runner_ids.push(*id);
+                    }
+                }
+            }
+        }
+    }
+
+    fn on_agent(
+        &mut self,
+        world: &World,
+        mut report: AgentReport,
+        now: i64,
+        out: &mut Vec<Change>,
+    ) {
+        self.resolve_runners(&mut report);
         let host = host_id(&report.host_label);
         out.push(Change::UpsertPlace {
             place: place(
@@ -1282,6 +1323,40 @@ mod tests {
                 id: "runner:7".into()
             }),
             "the empty row goes on the next tick: {ch:?}"
+        );
+    }
+
+    #[test]
+    fn runner_ids_come_from_gitlab_jobs_and_limits_from_tokens() {
+        let mut h = Harness::new(CiSettings::default());
+        h.feed(CiInput::Runners(vec![runner(2, &["heavy"], false)]));
+        h.feed(jobs(vec![heavy(1)], vec![]));
+        let unknown = |n: u32, job: u64| SlotReport {
+            runner_id: 0,
+            runner_token: "abcd1234".into(),
+            ..slot(n, job, 0, 1.0, 2.0)
+        };
+        let report = |slots: Vec<SlotReport>| {
+            let mut p = process("p", Some(5), slots);
+            p.token_limits.insert("abcd1234".into(), 1);
+            agent("a", "host", vec![p])
+        };
+        h.feed(report(vec![unknown(0, 1)]));
+        assert_eq!(h.place_of(1).as_deref(), Some("slot:a/p/0"));
+        let waiting = job(3, "g/app", JobStatus::Pending, &["heavy"]);
+        h.feed(jobs(vec![heavy(1), waiting.clone()], vec![]));
+        assert_eq!(
+            h.state_of(3).as_deref(),
+            Some("waiting_limit"),
+            "the token's limit of 1 is reached while slots are free"
+        );
+        // A job GitLab has not reported yet still gets its runner from the learnt token.
+        h.feed(report(vec![unknown(0, 1), unknown(1, 4)]));
+        let p = &h.scene.agents["a"].processes[0];
+        assert_eq!(p.slots[1].runner_id, 2);
+        assert_eq!(
+            (p.runner_ids.clone(), p.limits.get(&2)),
+            (vec![2], Some(&1))
         );
     }
 }

@@ -323,6 +323,7 @@ impl Simulator {
                     mem_limit_bytes: Some(j.limit),
                     has_service: j.info.stage == "build"
                         || j.info.tags.iter().any(|t| t == "heavy"),
+                    ..SlotReport::default()
                 })
             })
             .collect();
@@ -335,6 +336,7 @@ impl Simulator {
                 runner_ids: p.runners.to_vec(),
                 limits: p.limits.iter().copied().collect(),
                 slots,
+                ..ProcessReport::default()
             }],
             disk: Some(DiskUsage {
                 used_bytes: (self.disk * 80.0 * GIB as f64) as u64,
