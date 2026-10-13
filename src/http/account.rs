@@ -15,6 +15,7 @@ use axum_extra::extract::cookie::{Cookie, CookieJar, SameSite};
 use serde::Deserialize;
 use serde_json::{json, Value};
 use std::net::IpAddr;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
 use tokio::sync::Semaphore;
@@ -60,39 +61,68 @@ fn too_long(password: &str) -> bool {
     password.len() > MAX_PASSWORD * 4 || password.chars().count() > MAX_PASSWORD
 }
 
-/// Runs slow, memory-hungry work on the blocking pool; at most `ARGON_RUNS` run at once, the rest wait.
-/// The permit travels into the closure: a blocking task cannot be cancelled, so a client that
-/// disconnects must not free its place while the work still runs.
+/// More password checks than this already waiting: answer 503 instead of queueing.
+const ARGON_QUEUE: usize = 16;
+
+#[derive(Debug)]
+pub(super) struct Busy;
+
+fn busy() -> Response {
+    json_error(
+        StatusCode::SERVICE_UNAVAILABLE,
+        "lorvaq is busy checking passwords; try again in a moment",
+    )
+}
+
+/// Leaves the waiting count when dropped, even if the request is cancelled while waiting.
+struct Waiting<'a>(&'a AtomicUsize);
+
+impl Drop for Waiting<'_> {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
+/// Runs slow, memory-hungry work on the blocking pool; at most `ARGON_RUNS` run at once and
+/// at most `ARGON_QUEUE` wait. The permit travels into the closure: a blocking task cannot be
+/// cancelled, so a client that disconnects must not free its place while the work still runs.
 async fn run_limited<T: Send + 'static>(
     gate: &Arc<Semaphore>,
+    waiting: &AtomicUsize,
     work: impl FnOnce() -> T + Send + 'static,
-) -> Option<T> {
+) -> Result<T, Busy> {
+    let queued = waiting.fetch_add(1, Ordering::SeqCst);
+    let in_line = Waiting(waiting);
+    if queued >= ARGON_QUEUE {
+        return Err(Busy);
+    }
     let permit = gate
         .clone()
         .acquire_owned()
         .await
         .expect("the semaphore is never closed");
+    drop(in_line);
     tokio::task::spawn_blocking(move || {
         let out = work();
         drop(permit);
         out
     })
     .await
-    .ok()
+    .map_err(|_| Busy)
 }
 
-async fn hash_blocking(live: &Live, password: String) -> String {
-    run_limited(&live.argon, move || crypto::hash_password(&password))
-        .await
-        .expect("hashing does not panic")
+async fn hash_blocking(live: &Live, password: String) -> Result<String, Busy> {
+    run_limited(&live.argon, &live.argon_waiting, move || {
+        crypto::hash_password(&password)
+    })
+    .await
 }
 
-async fn verify_blocking(live: &Live, password: String, hash: String) -> bool {
-    run_limited(&live.argon, move || {
+async fn verify_blocking(live: &Live, password: String, hash: String) -> Result<bool, Busy> {
+    run_limited(&live.argon, &live.argon_waiting, move || {
         crypto::verify_password(&password, &hash)
     })
     .await
-    .unwrap_or(false)
 }
 
 fn too_many_attempts() -> Response {
@@ -176,7 +206,7 @@ pub(super) async fn setup(
         return too_many_attempts();
     }
     // Not a guess at the code: give the attempt back.
-    let release = || live.limiter.lock().expect(LOCK).release(key);
+    let release = || live.limiter.lock().expect(LOCK).release(key, now);
     match live.store.admin_hash().await {
         Ok(Some(_)) => {
             release();
@@ -200,7 +230,9 @@ pub(super) async fn setup(
             return db_error(e);
         }
     }
-    let hash = hash_blocking(live, body.password).await;
+    let Ok(hash) = hash_blocking(live, body.password).await else {
+        return busy();
+    };
     match live.store.create_admin_if_absent(&hash, now).await {
         Ok(true) => {}
         Ok(false) => return json_error(StatusCode::CONFLICT, "the admin already exists"),
@@ -233,15 +265,20 @@ pub(super) async fn login(
         Ok(Some(hash)) => hash,
         other => {
             // Not a password guess: give the attempt back.
-            live.limiter.lock().expect(LOCK).release(key);
+            live.limiter.lock().expect(LOCK).release(key, now);
             return match other {
                 Ok(_) => json_error(StatusCode::CONFLICT, "no admin yet: finish the setup first"),
                 Err(e) => db_error(e),
             };
         }
     };
-    if !verify_blocking(live, body.password, hash).await {
-        return json_error(StatusCode::UNAUTHORIZED, "wrong password");
+    match verify_blocking(live, body.password, hash).await {
+        Ok(true) => {}
+        Ok(false) => return json_error(StatusCode::UNAUTHORIZED, "wrong password"),
+        Err(Busy) => {
+            live.limiter.lock().expect(LOCK).release(key, now);
+            return busy();
+        }
     }
     live.limiter.lock().expect(LOCK).reset(key);
     start_session(live, jar, now).await
@@ -254,8 +291,10 @@ pub(super) async fn logout(State(s): State<Arc<AppState>>, jar: CookieJar) -> Re
         let deleted = live.store.delete_session(&hash).await;
         // Again once the row is gone: a check that began in between may have read it.
         live.sessions.lock().expect(LOCK).evict(&hash);
+        live.bump_auth_epoch();
         if let Err(e) = deleted {
-            return db_error(e);
+            // The cookie goes anyway; the row expires on its own.
+            tracing::warn!("signed out, but the session row stays until it expires: {e:#}");
         }
     }
     let mut gone = Cookie::from(SESSION_COOKIE);
@@ -284,25 +323,27 @@ pub(super) async fn change_password(
         Ok(None) => return json_error(StatusCode::CONFLICT, "no admin yet"),
         Err(e) => return db_error(e),
     };
-    if !verify_blocking(live, body.current, hash).await {
-        return json_error(StatusCode::FORBIDDEN, "the current password is wrong");
+    match verify_blocking(live, body.current, hash).await {
+        Ok(true) => {}
+        Ok(false) => return json_error(StatusCode::FORBIDDEN, "the current password is wrong"),
+        Err(Busy) => return busy(),
     }
-    if let Err(e) = live
-        .store
-        .set_admin_hash(&hash_blocking(live, body.new).await, now_ms())
-        .await
-    {
-        return db_error(e);
-    }
+    let Ok(new_hash) = hash_blocking(live, body.new).await else {
+        return busy();
+    };
     let mine = jar
         .get(SESSION_COOKIE)
         .map(|c| crypto::token_hash(c.value()))
         .expect("the admin guard checked the cookie");
     live.sessions.lock().expect(LOCK).evict_all_except(&mine);
-    let deleted = live.store.delete_other_sessions(&mine).await;
+    let replaced = live
+        .store
+        .replace_admin_password(&new_hash, &mine, now_ms())
+        .await;
     // Again once the rows are gone: a check that began in between may have read them.
     live.sessions.lock().expect(LOCK).evict_all_except(&mine);
-    if let Err(e) = deleted {
+    live.bump_auth_epoch();
+    if let Err(e) = replaced {
         return db_error(e);
     }
     Json(json!({ "ok": true })).into_response()
@@ -320,7 +361,7 @@ mod tests {
         let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
         let g = gate.clone();
         let request = tokio::spawn(async move {
-            run_limited(&g, move || {
+            run_limited(&g, &AtomicUsize::new(0), move || {
                 started_tx.send(()).unwrap();
                 release_rx.recv().unwrap();
             })
@@ -342,5 +383,21 @@ mod tests {
             .await
             .expect("the place is freed once the work ends")
             .unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_full_queue_answers_busy_without_running_the_work() {
+        let gate = Arc::new(Semaphore::new(0));
+        let waiting = AtomicUsize::new(ARGON_QUEUE);
+        let ran = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let r = ran.clone();
+        let result = run_limited(&gate, &waiting, move || r.store(true, Ordering::SeqCst)).await;
+        assert!(result.is_err());
+        assert!(!ran.load(Ordering::SeqCst));
+        assert_eq!(
+            waiting.load(Ordering::SeqCst),
+            ARGON_QUEUE,
+            "the counter is restored"
+        );
     }
 }

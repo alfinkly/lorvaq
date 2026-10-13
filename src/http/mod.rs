@@ -12,7 +12,7 @@ mod static_files;
 use crate::auth::{Access, LoginLimiter};
 use crate::crypto::SecretBox;
 use crate::history::HistoryStatus;
-use crate::scene::SceneHandle;
+use crate::scene::{SceneHandle, LOCK};
 use crate::store::Store;
 use crate::world::bus::Gap;
 use crate::world::Event;
@@ -36,6 +36,8 @@ pub use sessions::SessionCache;
 
 /// How many password hash/verify runs may go at once.
 const ARGON_RUNS: usize = 2;
+/// A guarded event stream lives at most this long; the client reconnects through the guard.
+const GUARDED_STREAM_MAX: Duration = Duration::from_secs(600);
 
 pub struct AppState {
     pub scenes: Vec<SceneHandle>,
@@ -63,6 +65,10 @@ pub struct Live {
     pub public_url: Option<String>,
     /// For calls to GitLab.
     pub http: reqwest::Client,
+    /// Bumped when sign-in state or the access mode changes: guarded event streams close.
+    pub auth_epoch: tokio::sync::watch::Sender<u64>,
+    /// Password checks waiting for an argon2 slot.
+    pub argon_waiting: std::sync::atomic::AtomicUsize,
 }
 
 impl Live {
@@ -86,7 +92,13 @@ impl Live {
             gitlab: None,
             public_url: None,
             http: crate::sources::gitlab::client::http_client(),
+            auth_epoch: tokio::sync::watch::channel(0).0,
+            argon_waiting: std::sync::atomic::AtomicUsize::new(0),
         }
+    }
+
+    pub fn bump_auth_epoch(&self) {
+        self.auth_epoch.send_modify(|epoch| *epoch += 1);
     }
 }
 
@@ -210,6 +222,26 @@ async fn events(
         .filter_map(|r| futures::future::ready(r.ok()))
         .filter(move |e| futures::future::ready(e.seq > sent_up_to));
     let stream = futures::stream::iter(backlog).chain(live).map(to_sse);
+    // Streams that needed a sign-in or a trusted proxy end when that may have changed;
+    // the client reconnects and the guard checks again.
+    let guarded = s.live.as_ref().map(|l| {
+        (
+            *l.access.read().expect(LOCK) != Access::Open,
+            l.auth_epoch.subscribe(),
+        )
+    });
+    let stream: futures::stream::BoxStream<'static, Result<SseEvent, Infallible>> = match guarded {
+        Some((true, mut epoch)) => {
+            let revoked = async move {
+                tokio::select! {
+                    _ = epoch.changed() => {}
+                    _ = tokio::time::sleep(GUARDED_STREAM_MAX) => {}
+                }
+            };
+            stream.take_until(revoked).boxed()
+        }
+        _ => stream.boxed(),
+    };
     Sse::new(stream)
         .keep_alive(KeepAlive::new().interval(Duration::from_secs(15)))
         .into_response()

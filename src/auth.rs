@@ -14,7 +14,7 @@ pub const SETUP_CODE_KEY: &str = "setup_code";
 const SETUP_TTL_MS: i64 = 24 * 3600 * 1000;
 const WINDOW_MS: i64 = 15 * 60 * 1000;
 const MAX_FAILURES: usize = 5;
-const MAX_TRACKED: usize = 10_000;
+pub(crate) const MAX_TRACKED: usize = 20_000;
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "mode", rename_all = "snake_case")]
@@ -146,6 +146,17 @@ impl LoginLimiter {
             self.attempts
                 .retain(|_, times| times.last().is_some_and(|t| now_ms - t < WINDOW_MS));
         }
+        if self.attempts.len() >= MAX_TRACKED && !self.attempts.contains_key(&key) {
+            // Still full of recent addresses: forget the one that tried longest ago.
+            if let Some(oldest) = self
+                .attempts
+                .iter()
+                .min_by_key(|(_, times)| times.last().copied().unwrap_or(i64::MIN))
+                .map(|(k, _)| *k)
+            {
+                self.attempts.remove(&oldest);
+            }
+        }
         let times = self.attempts.entry(key).or_default();
         times.retain(|t| now_ms - t < WINDOW_MS);
         if times.len() >= MAX_FAILURES {
@@ -155,14 +166,28 @@ impl LoginLimiter {
         true
     }
 
-    /// Takes back the latest attempt: it was not a password guess (bad input, database down).
-    pub fn release(&mut self, key: IpAddr) {
+    /// Takes back the attempt counted at `at_ms`: it was not a password guess.
+    pub fn release(&mut self, key: IpAddr, at_ms: i64) {
         if let Some(times) = self.attempts.get_mut(&key) {
-            times.pop();
+            if let Some(i) = times.iter().rposition(|t| *t == at_ms) {
+                times.remove(i);
+            }
             if times.is_empty() {
                 self.attempts.remove(&key);
             }
         }
+    }
+
+    pub fn len(&self) -> usize {
+        self.attempts.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.attempts.is_empty()
+    }
+
+    pub fn marks(&self, key: IpAddr) -> Vec<i64> {
+        self.attempts.get(&key).cloned().unwrap_or_default()
     }
 
     pub fn reset(&mut self, key: IpAddr) {
@@ -203,14 +228,27 @@ pub async fn check_setup_code(store: &Store, code: &str, now_ms: i64) -> anyhow:
     })
 }
 
-/// On a fresh install there is no admin: print a one-time code to create one.
+/// On a fresh install there is no admin: print a one-time code to create one. A code
+/// that is still valid (from a first start or `reset-password`) is kept, not replaced.
 pub async fn announce_setup_code(store: &Store, now_ms: i64) -> anyhow::Result<()> {
-    if store.admin_hash().await?.is_none() {
-        let code = issue_setup_code(store, now_ms).await?;
-        tracing::warn!("no admin yet: open lorvaq and enter the one-time setup code {code} (valid for 24 hours)");
+    if store.admin_hash().await?.is_some() {
+        return Ok(());
     }
+    if store
+        .setting::<SetupCode>(SETUP_CODE_KEY)
+        .await?
+        .is_some_and(|c| c.expires_ms > now_ms)
+    {
+        tracing::warn!("no admin yet: use the setup code printed earlier, or run `lorvaq admin reset-password` for a new one");
+        return Ok(());
+    }
+    let code = issue_setup_code(store, now_ms).await?;
+    tracing::warn!(
+        "no admin yet: open lorvaq and enter the one-time setup code {code} (valid for 24 hours)"
+    );
     Ok(())
 }
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -324,7 +362,7 @@ mod tests {
         let a: IpAddr = "10.0.0.1".parse().unwrap();
         let started = (0..6).filter(|_| l.try_begin(a, 1)).count();
         assert_eq!(started, 5, "the sixth concurrent attempt is blocked");
-        l.release(a);
+        l.release(a, 1);
         assert!(l.try_begin(a, 2), "a released attempt frees a place");
         assert!(!l.try_begin(a, 2));
         l.reset(a);
@@ -467,5 +505,19 @@ mod tests {
     #[test]
     fn setup_codes_ignore_case_and_dashes() {
         assert_eq!(normalize(" abcd-efgh-2345 6789 "), "ABCDEFGH23456789");
+    }
+
+    #[test]
+    fn the_limiter_stays_bounded_and_releases_its_own_mark() {
+        let mut l = LoginLimiter::default();
+        for i in 0..(MAX_TRACKED as u32 + 10) {
+            assert!(l.try_begin(IpAddr::from(std::net::Ipv4Addr::from(i)), i64::from(i)));
+        }
+        assert!(l.len() <= MAX_TRACKED, "{}", l.len());
+        let key: IpAddr = "10.9.9.9".parse().unwrap();
+        assert!(l.try_begin(key, 100));
+        assert!(l.try_begin(key, 200));
+        l.release(key, 100);
+        assert_eq!(l.marks(key), vec![200]);
     }
 }

@@ -35,6 +35,7 @@ pub(super) async fn put_access(
         return db_error(e);
     }
     *live.access.write().expect(LOCK) = access.clone();
+    live.bump_auth_epoch();
     Json(access).into_response()
 }
 

@@ -762,3 +762,37 @@ async fn scene_settings_are_written_one_request_at_a_time() {
     let (status, _, _) = waiting.await.unwrap();
     assert_eq!(status, StatusCode::OK);
 }
+
+#[tokio::test]
+async fn signing_out_ends_open_event_streams() {
+    use http_body_util::BodyExt;
+    use tower::ServiceExt;
+    let (r, _, cookie) = signed_in(Access::Admin).await;
+    let req = axum::http::Request::get("/api/v1/scenes/ci/events?since=0")
+        .header(axum::http::header::COOKIE, &cookie)
+        .body(axum::body::Body::empty())
+        .unwrap();
+    let res = r.clone().oneshot(req).await.unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    let mut body = res.into_body();
+    let (status, _, _) = call(&r, "POST", "/api/v1/logout", Some(&cookie), None, &[]).await;
+    assert_eq!(status, StatusCode::OK);
+    let ended = tokio::time::timeout(Duration::from_secs(3), async {
+        while let Some(frame) = body.frame().await {
+            frame.unwrap();
+        }
+    })
+    .await;
+    assert!(ended.is_ok(), "the stream closed after sign-out");
+}
+
+#[tokio::test]
+async fn sign_out_clears_the_cookie_even_with_the_database_down() {
+    let (r, store, cookie) = signed_in(Access::Admin).await;
+    store.close().await;
+    let (status, _, cleared) = call(&r, "POST", "/api/v1/logout", Some(&cookie), None, &[]).await;
+    assert_eq!(
+        (status, cleared.as_deref()),
+        (StatusCode::OK, Some("lorvaq_session="))
+    );
+}

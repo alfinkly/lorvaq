@@ -92,6 +92,27 @@ impl Store {
         Ok(())
     }
 
+    /// A new admin password and every other session gone, or neither.
+    pub async fn replace_admin_password(
+        &self,
+        hash: &str,
+        keep_session_hash: &str,
+        now_ms: i64,
+    ) -> anyhow::Result<()> {
+        let mut tx = self.pool.begin().await?;
+        sqlx::query("UPDATE admin SET password_hash = $1, updated_ms = $2 WHERE id = 1")
+            .bind(hash)
+            .bind(now_ms)
+            .execute(&mut *tx)
+            .await?;
+        sqlx::query("DELETE FROM sessions WHERE token_hash <> $1")
+            .bind(keep_session_hash)
+            .execute(&mut *tx)
+            .await?;
+        tx.commit().await?;
+        Ok(())
+    }
+
     /// Stores the first admin; false when one already exists (two setups at once: one wins).
     pub async fn create_admin_if_absent(&self, hash: &str, now_ms: i64) -> anyhow::Result<bool> {
         let done = sqlx::query(

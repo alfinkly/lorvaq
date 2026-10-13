@@ -175,3 +175,28 @@ async fn a_setup_code_is_announced_only_without_an_admin() {
         .unwrap()
         .is_none());
 }
+
+#[tokio::test]
+async fn replacing_the_password_drops_other_sessions_atomically() {
+    let s = common::store().await;
+    s.set_admin_hash("old", 0).await.unwrap();
+    s.create_session("mine", 0, 1_000).await.unwrap();
+    s.create_session("theirs", 0, 1_000).await.unwrap();
+    s.replace_admin_password("new", "mine", 1).await.unwrap();
+    assert_eq!(s.admin_hash().await.unwrap().as_deref(), Some("new"));
+    assert!(s.session_valid("mine", 10).await.unwrap());
+    assert!(!s.session_valid("theirs", 10).await.unwrap());
+}
+
+#[tokio::test]
+async fn a_valid_setup_code_survives_a_restart() {
+    let s = common::store().await;
+    let code = lorvaq::auth::issue_setup_code(&s, 1_000).await.unwrap();
+    lorvaq::auth::announce_setup_code(&s, 2_000).await.unwrap();
+    assert!(
+        lorvaq::auth::check_setup_code(&s, &code, 3_000)
+            .await
+            .unwrap(),
+        "the code from reset-password still works"
+    );
+}
