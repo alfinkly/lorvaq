@@ -4,3 +4,6 @@ pub mod client;
 pub mod fake;
 pub mod model;
 pub mod oauth;
+pub mod poller;
+
+pub use poller::{spawn, GitlabHandle, GitlabStatus, PollConfig, SourceState};
