@@ -4,6 +4,7 @@ import {
   exitsProblem,
   formatCapacities,
   gitlabUrlProblem,
+  hostNameProblem,
   normalizeGitlabUrl,
   oauthOutcome,
   parseCapacities,
@@ -78,5 +79,12 @@ describe("gitlab", () => {
     expect(oauthOutcome("#/settings?gitlab=not_admin")).toMatch(/administrator/);
     expect(oauthOutcome("#/settings?gitlab=whatever")).toMatch(/did not finish/);
     expect(oauthOutcome("#/settings")).toBeNull();
+  });
+});
+
+describe("hosts", () => {
+  test("names", () => {
+    for (const good of ["build-01", "a", "runner.example_2", " ci1 "]) expect(hostNameProblem(good)).toBeNull();
+    for (const bad of ["", "-x", "Build", "a b", "x".repeat(41)]) expect(hostNameProblem(bad)).not.toBeNull();
   });
 });

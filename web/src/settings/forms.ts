@@ -91,3 +91,7 @@ export function oauthOutcome(hash: string): string | null {
   if (!outcome) return null;
   return t.gitlabOutcome[outcome] ?? t.gitlabOutcomeOther;
 }
+
+export function hostNameProblem(name: string): string | null {
+  return /^[a-z0-9][a-z0-9._-]{0,39}$/.test(name.trim()) ? null : t.badHostName;
+}

@@ -61,3 +61,5 @@ header a, header button.link { color: var(--muted); font-size: 13px; text-decora
 
 .card code { font-size: 12px; background: var(--bg); border: 1px solid var(--border); border-radius: 4px; padding: 1px 4px; user-select: all; }
 .card a { color: var(--text); font-size: 13px; }
+
+.card pre.command { font-size: 12px; background: var(--bg); border: 1px solid var(--border); border-radius: 4px; padding: 8px; margin: 0; overflow-x: auto; white-space: pre; user-select: all; }

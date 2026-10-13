@@ -2,16 +2,20 @@ import { useEffect, useState, type FormEvent, type ReactNode } from "react";
 import {
   changePassword,
   connectGitlabToken,
+  createAgent,
   disconnectGitlab,
   getGitlab,
   getAccess,
+  getAgents,
   getHistory,
   getSceneSettings,
   putAccess,
   putHistory,
   putSceneSettings,
+  removeAgent,
   startGitlabOauth,
   type Access,
+  type AgentInfo,
   type CiSettings,
   type ExitRule,
   type GitlabStatus,
@@ -24,6 +28,7 @@ import {
   exitsProblem,
   formatCapacities,
   gitlabUrlProblem,
+  hostNameProblem,
   normalizeGitlabUrl,
   oauthOutcome,
   parseCapacities,
@@ -363,10 +368,90 @@ function GitlabSection({ onAuthLost }: Props) {
   );
 }
 
+function HostsSection({ onAuthLost }: Props) {
+  const [agents, setAgents] = useState<AgentInfo[]>([]);
+  const [name, setName] = useState("");
+  const [created, setCreated] = useState<{ name: string; command: string } | null>(null);
+  const [status, setStatus] = useState<string | null>(null);
+
+  const load = () =>
+    getAgents()
+      .then(setAgents)
+      .catch((e) => setStatus(failure(e, onAuthLost)));
+
+  useEffect(() => {
+    void load();
+    const id = setInterval(() => void load(), 5000);
+    return () => clearInterval(id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  async function add(e: FormEvent) {
+    e.preventDefault();
+    const problem = hostNameProblem(name);
+    if (problem) return setStatus(problem);
+    try {
+      const made = await createAgent(name.trim());
+      setCreated({ name: made.name, command: made.command });
+      setName("");
+      setStatus(null);
+      void load();
+    } catch (err) {
+      setStatus(failure(err, onAuthLost));
+    }
+  }
+
+  async function remove(host: string) {
+    if (!confirm(t.removeHostConfirm(host))) return;
+    try {
+      await removeAgent(host);
+      if (created?.name === host) setCreated(null);
+      void load();
+    } catch (err) {
+      setStatus(failure(err, onAuthLost));
+    }
+  }
+
+  const ago = (ms: number) => Math.max(0, Math.round((Date.now() - ms) / 1000));
+  return (
+    <form className="card" onSubmit={add}>
+      <h2>{t.hostsTitle}</h2>
+      <p className="hint">{t.hostsHint}</p>
+      {agents.length === 0 && <p className="hint">{t.noHosts}</p>}
+      {agents.map((a) => (
+        <div key={a.name} className="row">
+          <span className={a.online ? "ok" : "error"}>
+            {a.name}
+            {a.host && a.host !== a.name ? ` (${a.host})` : ""} — {a.online ? t.hostOnline : t.hostOffline}
+            {!a.online && (a.last_seen_ms ? `, ${t.hostSeen(ago(a.last_seen_ms))}` : `, ${t.hostNever}`)}
+            {a.version ? `, v${a.version}` : ""}
+          </span>
+          <button type="button" onClick={() => void remove(a.name)}>{t.removeHost}</button>
+        </div>
+      ))}
+      {created && (
+        <>
+          <p className="hint">{t.hostCommand(created.name)}</p>
+          <pre className="command">{created.command}</pre>
+        </>
+      )}
+      <label>
+        {t.hostName}
+        <input value={name} onChange={(e) => setName(e.target.value)} placeholder="build-01" autoComplete="off" />
+      </label>
+      <div className="row">
+        <button type="submit">{t.addHost}</button>
+        {status && <span className="error">{status}</span>}
+      </div>
+    </form>
+  );
+}
+
 export function Settings({ onAuthLost }: Props) {
   return (
     <div className="settings">
       <GitlabSection onAuthLost={onAuthLost} />
+      <HostsSection onAuthLost={onAuthLost} />
       <AccessSection onAuthLost={onAuthLost} />
       <CiSection onAuthLost={onAuthLost} />
       <HistorySection onAuthLost={onAuthLost} />

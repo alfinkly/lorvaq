@@ -93,6 +93,19 @@ export const startGitlabOauth = (url: string, client_id: string, client_secret: 
   request<{ authorize_url: string }>("POST", "/api/v1/admin/sources/gitlab/oauth", { url, client_id, client_secret });
 export const disconnectGitlab = () => request<{ ok: true }>("DELETE", "/api/v1/admin/sources/gitlab");
 
+export interface AgentInfo {
+  name: string;
+  online: boolean;
+  host: string | null;
+  version: string | null;
+  last_seen_ms: number | null;
+  created_ms: number;
+}
+
+export const getAgents = () => getJson<AgentInfo[]>("/api/v1/admin/agents");
+export const createAgent = (name: string) => request<{ name: string; token: string; command: string }>("POST", "/api/v1/admin/agents", { name });
+export const removeAgent = (name: string) => request<{ ok: true }>("DELETE", `/api/v1/admin/agents/${encodeURIComponent(name)}`);
+
 export interface Subscription {
   close(): void;
 }
