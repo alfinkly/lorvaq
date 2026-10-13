@@ -1,7 +1,7 @@
 //! Wires scenes, sources, storage and HTTP into a running server.
 
 use crate::auth::{self, Access};
-use crate::cli::{DbArgs, ServerArgs};
+use crate::cli::{AgentArgs, DbArgs, ServerArgs};
 use crate::crypto::SecretBox;
 use crate::history::{self, HistoryStatus};
 use crate::http::{router, AppState, Live};
@@ -107,6 +107,21 @@ pub async fn run_server(args: ServerArgs) -> anyhow::Result<()> {
     let store = Store::connect(&url).await?;
     let state = live_state(store, secrets, args.public_url.as_deref()).await?;
     serve(args.listen, state).await
+}
+
+/// `lorvaq agent`: runs until stopped.
+pub async fn run_agent(args: AgentArgs) -> anyhow::Result<()> {
+    use crate::agent::run::{connect_url, default_host_label, AgentConfig};
+    connect_url(&args.server)?;
+    let host = args.host_label.unwrap_or_else(default_host_label);
+    let mut cfg = AgentConfig::new(&args.server, &args.join, &host);
+    cfg.process = args.process;
+    cfg.runner_metrics = args.runner_metrics;
+    cfg.disk_path = args.disk_path;
+    let docker = crate::agent::bollard_docker::BollardDocker::connect().await?;
+    tracing::info!(host = %cfg.host_label, "lorvaq agent reports to {}", cfg.server);
+    crate::agent::run::run(docker, cfg).await;
+    Ok(())
 }
 
 /// `lorvaq admin reset-password`: works while the server runs.

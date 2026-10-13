@@ -17,6 +17,7 @@ async fn main() -> anyhow::Result<()> {
             Ok(())
         }
         Command::Server(args) => app::run_server(args).await,
+        Command::Agent(args) => app::run_agent(args).await,
         Command::Admin {
             action: AdminAction::ResetPassword,
             db,

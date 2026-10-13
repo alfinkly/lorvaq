@@ -1,7 +1,8 @@
-//! Command line: `lorvaq server`, `lorvaq admin reset-password`, `lorvaq keygen`.
+//! Command line: `lorvaq server`, `lorvaq agent`, `lorvaq admin reset-password`, `lorvaq keygen`.
 
 use clap::{Args, Parser, Subcommand};
 use std::net::SocketAddr;
+use std::path::PathBuf;
 
 #[derive(Debug, Parser)]
 #[command(
@@ -18,6 +19,8 @@ pub struct Cli {
 pub enum Command {
     /// Run the server: sources, scenes, API and UI.
     Server(ServerArgs),
+    /// Run next to gitlab-runner and report its job containers to a lorvaq server.
+    Agent(AgentArgs),
     /// Administration that works on the database directly.
     Admin {
         #[command(subcommand)]
@@ -48,6 +51,29 @@ pub struct ServerArgs {
 }
 
 #[derive(Debug, Args)]
+pub struct AgentArgs {
+    /// The lorvaq server, like https://lorvaq.example.com.
+    #[arg(long, env = "LORVAQ_SERVER")]
+    pub server: String,
+    /// The join token from Settings → Hosts (prefer the environment variable).
+    #[arg(long, env = "LORVAQ_JOIN", hide_env_values = true)]
+    pub join: String,
+    /// The host's name on the scene; agents with the same name share a host.
+    #[arg(long, env = "LORVAQ_HOST_LABEL")]
+    pub host_label: Option<String>,
+    /// The name of the gitlab-runner process on the scene.
+    #[arg(long, env = "LORVAQ_PROCESS", default_value = "gitlab-runner")]
+    pub process: String,
+    /// gitlab-runner's metrics address (listen_address in its config.toml), for
+    /// `concurrent` and per-runner `limit`.
+    #[arg(long, env = "LORVAQ_RUNNER_METRICS")]
+    pub runner_metrics: Option<String>,
+    /// A path on docker's data partition; its fill is the host's disk level.
+    #[arg(long, env = "LORVAQ_DISK_PATH", default_value = "/")]
+    pub disk_path: PathBuf,
+}
+
+#[derive(Debug, Args)]
 pub struct DbArgs {
     /// Postgres connection URL.
     #[arg(long, env = "DATABASE_URL", hide_env_values = true, global = true)]
@@ -63,6 +89,33 @@ pub enum AdminAction {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn agent_takes_its_server_and_token() {
+        let cli = Cli::try_parse_from([
+            "lorvaq",
+            "agent",
+            "--server",
+            "https://lorvaq.example.com",
+            "--join",
+            "t",
+            "--runner-metrics",
+            "http://127.0.0.1:9252/metrics",
+        ])
+        .unwrap();
+        let Command::Agent(args) = cli.command else {
+            panic!("agent expected")
+        };
+        assert_eq!(
+            (
+                args.server.as_str(),
+                args.join.as_str(),
+                args.process.as_str()
+            ),
+            ("https://lorvaq.example.com", "t", "gitlab-runner")
+        );
+        assert_eq!(args.disk_path, PathBuf::from("/"));
+    }
 
     #[test]
     fn server_demo_with_listen() {
