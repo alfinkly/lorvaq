@@ -1,5 +1,17 @@
 import { describe, expect, test } from "vitest";
-import { accessProblem, exitsProblem, formatCapacities, parseCapacities, parseList, passwordProblem, retentionProblem } from "./forms";
+import {
+  accessProblem,
+  exitsProblem,
+  formatCapacities,
+  gitlabUrlProblem,
+  normalizeGitlabUrl,
+  oauthOutcome,
+  parseCapacities,
+  parseList,
+  passwordProblem,
+  retentionProblem,
+  tokenPageUrl,
+} from "./forms";
 
 describe("forms", () => {
   test("passwords", () => {
@@ -44,5 +56,27 @@ describe("forms", () => {
     expect(retentionProblem(0)).not.toBeNull();
     expect(retentionProblem(366)).not.toBeNull();
     expect(retentionProblem(1.5)).not.toBeNull();
+  });
+});
+
+describe("gitlab", () => {
+  test("addresses", () => {
+    expect(gitlabUrlProblem("https://gitlab.example.com")).toBeNull();
+    expect(gitlabUrlProblem("http://127.0.0.1:8929/gitlab/")).toBeNull();
+    expect(gitlabUrlProblem("gitlab.example.com")).not.toBeNull();
+    expect(gitlabUrlProblem("ftp://gitlab.example.com")).not.toBeNull();
+    expect(gitlabUrlProblem("https://gitlab.example.com/?a=1")).not.toBeNull();
+    expect(normalizeGitlabUrl(" https://gitlab.example.com/// ")).toBe("https://gitlab.example.com");
+  });
+
+  test("the token page is prefilled", () => {
+    expect(tokenPageUrl("https://gitlab.example.com")).toBe("https://gitlab.example.com/-/user_settings/personal_access_tokens?name=lorvaq&scopes=read_api");
+  });
+
+  test("oauth outcomes come back in the hash", () => {
+    expect(oauthOutcome("#/settings?gitlab=connected")).toMatch(/connected/i);
+    expect(oauthOutcome("#/settings?gitlab=not_admin")).toMatch(/administrator/);
+    expect(oauthOutcome("#/settings?gitlab=whatever")).toMatch(/did not finish/);
+    expect(oauthOutcome("#/settings")).toBeNull();
   });
 });

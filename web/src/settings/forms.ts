@@ -64,3 +64,30 @@ export function formatCapacities(capacities: Record<string, number>): string {
 export function retentionProblem(days: number): string | null {
   return Number.isInteger(days) && days >= 1 && days <= 365 ? null : t.badRetention;
 }
+
+export function normalizeGitlabUrl(url: string): string {
+  return url.trim().replace(/\/+$/, "");
+}
+
+export function gitlabUrlProblem(url: string): string | null {
+  try {
+    const u = new URL(url.trim());
+    if (!["http:", "https:"].includes(u.protocol) || u.search || u.hash || u.username || u.password) return t.gitlabBadUrl;
+    return null;
+  } catch {
+    return t.gitlabBadUrl;
+  }
+}
+
+export function tokenPageUrl(base: string): string {
+  return `${normalizeGitlabUrl(base)}/-/user_settings/personal_access_tokens?name=lorvaq&scopes=read_api`;
+}
+
+/** The result of an OAuth round trip, from `#/settings?gitlab=<outcome>`. */
+export function oauthOutcome(hash: string): string | null {
+  const query = hash.split("?")[1];
+  if (!query) return null;
+  const outcome = new URLSearchParams(query).get("gitlab");
+  if (!outcome) return null;
+  return t.gitlabOutcome[outcome] ?? t.gitlabOutcomeOther;
+}

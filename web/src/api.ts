@@ -76,6 +76,23 @@ export const putHistory = (retention_days: number) => request<{ retention_days: 
 export const getSceneSettings = <T>(id: string) => getJson<T>(`/api/v1/admin/scenes/${encodeURIComponent(id)}/settings`);
 export const putSceneSettings = <T>(id: string, settings: T) => request<T>("PUT", `/api/v1/admin/scenes/${encodeURIComponent(id)}/settings`, settings);
 
+export interface GitlabStatus {
+  connected: boolean;
+  url: string | null;
+  user: string | null;
+  kind: "oauth" | "token" | null;
+  state: "disconnected" | "ok" | "failing" | "reauthorize";
+  last_ok_ms: number | null;
+  last_error: string | null;
+  redirect_uri: string | null;
+}
+
+export const getGitlab = () => getJson<GitlabStatus>("/api/v1/admin/sources/gitlab");
+export const connectGitlabToken = (url: string, token: string) => request<{ connected: true; user: string; url: string }>("POST", "/api/v1/admin/sources/gitlab/token", { url, token });
+export const startGitlabOauth = (url: string, client_id: string, client_secret: string | null) =>
+  request<{ authorize_url: string }>("POST", "/api/v1/admin/sources/gitlab/oauth", { url, client_id, client_secret });
+export const disconnectGitlab = () => request<{ ok: true }>("DELETE", "/api/v1/admin/sources/gitlab");
+
 export interface Subscription {
   close(): void;
 }

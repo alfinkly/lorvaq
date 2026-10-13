@@ -10,7 +10,7 @@ import { Setup } from "./pages/Setup";
 type Status = "connecting" | "offline" | FollowStatus;
 type Route = "scenes" | "settings";
 
-const routeOf = (hash: string): Route => (hash === "#/settings" ? "settings" : "scenes");
+const routeOf = (hash: string): Route => (hash.startsWith("#/settings") ? "settings" : "scenes");
 
 export function App() {
   const [me, setMe] = useState<Me | null>(null);
@@ -31,10 +31,16 @@ export function App() {
               setScenes(list);
               setActive((current) => current ?? list[0]?.id ?? null);
             })
-            .catch(() => setStatus("offline"));
+            .catch(() => {
+              setStatus("offline");
+              setTimeout(refresh, 3000);
+            });
         }
       })
-      .catch(() => setStatus("offline"));
+      .catch(() => {
+        setStatus("offline");
+        setTimeout(refresh, 3000);
+      });
   }, []);
 
   useEffect(refresh, [refresh]);

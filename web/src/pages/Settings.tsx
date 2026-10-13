@@ -1,20 +1,37 @@
 import { useEffect, useState, type FormEvent, type ReactNode } from "react";
 import {
   changePassword,
+  connectGitlabToken,
+  disconnectGitlab,
+  getGitlab,
   getAccess,
   getHistory,
   getSceneSettings,
   putAccess,
   putHistory,
   putSceneSettings,
+  startGitlabOauth,
   type Access,
   type CiSettings,
   type ExitRule,
+  type GitlabStatus,
   type HistoryInfo,
 } from "../api";
 import { t } from "../i18n";
 import { failure } from "../settings/errors";
-import { accessProblem, exitsProblem, formatCapacities, parseCapacities, parseList, passwordProblem, retentionProblem } from "../settings/forms";
+import {
+  accessProblem,
+  exitsProblem,
+  formatCapacities,
+  gitlabUrlProblem,
+  normalizeGitlabUrl,
+  oauthOutcome,
+  parseCapacities,
+  parseList,
+  passwordProblem,
+  retentionProblem,
+  tokenPageUrl,
+} from "../settings/forms";
 
 type Props = { onAuthLost: () => void };
 
@@ -231,9 +248,125 @@ function PasswordSection({ onAuthLost }: Props) {
   );
 }
 
+function GitlabSection({ onAuthLost }: Props) {
+  const [st, setSt] = useState<GitlabStatus | null>(null);
+  const [url, setUrl] = useState("");
+  const [mode, setMode] = useState<"oauth" | "token">("oauth");
+  const [clientId, setClientId] = useState("");
+  const [secret, setSecret] = useState("");
+  const [token, setToken] = useState("");
+  const [status, setStatus] = useState<string | null>(() => oauthOutcome(location.hash));
+
+  const load = () =>
+    getGitlab()
+      .then((g) => {
+        setSt(g);
+        if (g.url) setUrl(g.url);
+      })
+      .catch((e) => setStatus(failure(e, onAuthLost)));
+
+  useEffect(() => {
+    void load();
+    if (location.hash.includes("?")) history.replaceState(null, "", "#/settings");
+    const id = setInterval(() => void load(), 5000);
+    return () => clearInterval(id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  async function connect(e: FormEvent) {
+    e.preventDefault();
+    const problem = gitlabUrlProblem(url);
+    if (problem) return setStatus(problem);
+    try {
+      if (mode === "token") {
+        await connectGitlabToken(normalizeGitlabUrl(url), token.trim());
+        setToken("");
+        setStatus(t.gitlabOutcome.connected);
+        void load();
+      } else {
+        const { authorize_url } = await startGitlabOauth(normalizeGitlabUrl(url), clientId.trim(), secret.trim() || null);
+        location.href = authorize_url;
+      }
+    } catch (err) {
+      setStatus(failure(err, onAuthLost));
+    }
+  }
+
+  async function disconnect() {
+    try {
+      await disconnectGitlab();
+      void load();
+    } catch (err) {
+      setStatus(failure(err, onAuthLost));
+    }
+  }
+
+  const seconds = st?.last_ok_ms ? Math.max(0, Math.round((Date.now() - st.last_ok_ms) / 1000)) : null;
+  return (
+    <form className="card" onSubmit={connect}>
+      <h2>{t.gitlabTitle}</h2>
+      {st?.connected && (
+        <div className="row">
+          <span className={st.state === "ok" ? "ok" : "error"}>
+            {t.gitlabConnectedAs(st.user ?? "?", st.url ?? "?")} — {t.gitlabState[st.state]}
+            {seconds !== null ? `, ${t.gitlabLastOk(seconds)}` : ""}
+          </span>
+          <button type="button" onClick={disconnect}>{t.gitlabDisconnect}</button>
+        </div>
+      )}
+      {st?.last_error && <p className="error">{st.last_error}</p>}
+      <label>
+        {t.gitlabUrl}
+        <input value={url} onChange={(e) => setUrl(e.target.value)} placeholder="https://gitlab.example.com" />
+      </label>
+      <label className="choice">
+        <input type="radio" name="gitlab-mode" checked={mode === "oauth"} onChange={() => setMode("oauth")} />
+        {t.gitlabByOauth}
+      </label>
+      <label className="choice">
+        <input type="radio" name="gitlab-mode" checked={mode === "token"} onChange={() => setMode("token")} />
+        {t.gitlabByToken}
+      </label>
+      {mode === "oauth" ? (
+        <>
+          <p className="hint">{t.gitlabOauthHint}</p>
+          <p className="hint">
+            {t.gitlabRedirectUri}: {st?.redirect_uri ? <code>{st.redirect_uri}</code> : t.gitlabNoRedirect}
+          </p>
+          <label>
+            {t.gitlabClientId}
+            <input value={clientId} onChange={(e) => setClientId(e.target.value)} autoComplete="off" />
+          </label>
+          <label>
+            {t.gitlabClientSecret}
+            <input type="password" value={secret} onChange={(e) => setSecret(e.target.value)} autoComplete="off" />
+          </label>
+          <button type="submit">{t.gitlabAuthorize}</button>
+        </>
+      ) : (
+        <>
+          <p className="hint">{t.gitlabTokenHint}</p>
+          {!gitlabUrlProblem(url) && (
+            <a href={tokenPageUrl(url)} target="_blank" rel="noopener noreferrer">
+              {t.gitlabCreateToken}
+            </a>
+          )}
+          <label>
+            {t.gitlabToken}
+            <input type="password" value={token} onChange={(e) => setToken(e.target.value)} autoComplete="off" />
+          </label>
+          <button type="submit">{t.gitlabConnect}</button>
+        </>
+      )}
+      {status && <p className={status === t.gitlabOutcome.connected ? "ok" : "error"}>{status}</p>}
+    </form>
+  );
+}
+
 export function Settings({ onAuthLost }: Props) {
   return (
     <div className="settings">
+      <GitlabSection onAuthLost={onAuthLost} />
       <AccessSection onAuthLost={onAuthLost} />
       <CiSection onAuthLost={onAuthLost} />
       <HistorySection onAuthLost={onAuthLost} />
