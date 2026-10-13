@@ -29,7 +29,9 @@ services:
       LORVAQ_SECRET_KEY: ${LORVAQ_SECRET_KEY:?set LORVAQ_SECRET_KEY in .env (lorvaq keygen)}
       LORVAQ_PUBLIC_URL: ${LORVAQ_PUBLIC_URL:-}
     ports:
-      - "8080:8080"
+      # Local only by default: put your reverse proxy (with https) in front.
+      # To expose lorvaq directly, use "8080:8080".
+      - "127.0.0.1:8080:8080"
     depends_on:
       db:
         condition: service_healthy

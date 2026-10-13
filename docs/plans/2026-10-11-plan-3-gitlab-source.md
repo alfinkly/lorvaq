@@ -60,7 +60,7 @@ compose.yml  README.md
 **Interfaces:**
 - Produces (`sources::gitlab::model`): константы `WHO_QUERY`, `JOBS_QUERY`, `MORE_JOBS_QUERY`, `RUNNERS_QUERY`; типы ответов `Who { current_user: Option<User> }`, `User { username: String, admin: Option<bool> }`, `PageInfo`, `Nodes<T> { nodes, page_info: Option<PageInfo> }`, `JobsPage { active, finished }`, `MoreJobs { active }`, `RunnersPage { runners }`, `GqlJob`, `GqlRunner`; функции `gid_number(&str) -> Option<u64>`, `job_status(&str) -> Option<JobStatus>`, `to_job(&GqlJob) -> Option<JobInfo>`, `to_runner(&GqlRunner) -> Option<RunnerInfo>`.
 
-- [ ] **Step 1: Зависимость и модули**
+- [x] **Step 1: Зависимость и модули**
 
 В `Cargo.toml`, `[dependencies]`:
 
@@ -86,7 +86,7 @@ pub mod model;
 
 Добавить в `src/lib.rs` строку `pub mod sources;`.
 
-- [ ] **Step 2: Написать падающие тесты**
+- [x] **Step 2: Написать падающие тесты**
 
 `src/sources/gitlab/model.rs`:
 
@@ -191,7 +191,7 @@ mod tests {
 Run: `cargo test sources::gitlab::model`
 Expected: ошибки компиляции `cannot find function 'to_job'`.
 
-- [ ] **Step 3: Реализовать**
+- [x] **Step 3: Реализовать**
 
 Добавить в начало `src/sources/gitlab/model.rs`:
 
@@ -375,12 +375,12 @@ pub fn to_runner(runner: &GqlRunner) -> Option<RunnerInfo> {
 }
 ```
 
-- [ ] **Step 4: Запустить — проходит**
+- [x] **Step 4: Запустить — проходит**
 
 Run: `cargo test sources::gitlab::model && cargo clippy --all-targets -- -D warnings && cargo fmt --check`
 Expected: `7 passed`.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add Cargo.toml Cargo.lock src/
@@ -403,7 +403,7 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
   - `client::{GitlabError::{Unauthorized, Status(u16), Network(String), Graphql(String), Decode(String), Local(String)}, http_client() -> reqwest::Client, normalize_url(&str) -> Result<String, String>, Gitlab::new(&Client, base, token)}` с методами `query::<T>(query, variables)`, `whoami() -> Result<User, _>`, `jobs() -> Result<JobsUpdate, _>`, `runners() -> Result<Vec<RunnerInfo>, _>`. 401 и 403 → `Unauthorized`.
   - `fake::{FakeGitlab { url, state }, FakeState, FakeGitlab::{start(), job(id, project, status, runner), runner(id, tags, untagged)}}`; `FakeState` поля: `token, username, admin, fail_with: Option<u16>, graphql_error: Option<String>, active, finished, runners, graphql_calls, client_id, code, challenge: Option<String>, refresh, issued, expires_in, token_requests`.
 
-- [ ] **Step 1: Поддельный GitLab**
+- [x] **Step 1: Поддельный GitLab**
 
 `src/sources/gitlab/fake.rs`:
 
@@ -579,7 +579,7 @@ pub mod model;
 pub mod oauth;
 ```
 
-- [ ] **Step 2: Написать падающие тесты клиента**
+- [x] **Step 2: Написать падающие тесты клиента**
 
 `src/sources/gitlab/client.rs`:
 
@@ -649,7 +649,7 @@ mod tests {
 Run: `cargo test sources::gitlab::client`
 Expected: ошибки компиляции `cannot find function 'normalize_url'`.
 
-- [ ] **Step 3: Реализовать клиент**
+- [x] **Step 3: Реализовать клиент**
 
 Добавить в начало `src/sources/gitlab/client.rs`:
 
@@ -802,12 +802,12 @@ impl<'a> Gitlab<'a> {
 }
 ```
 
-- [ ] **Step 4: Запустить — проходит**
+- [x] **Step 4: Запустить — проходит**
 
 Run: `cargo test sources::gitlab && cargo clippy --all-targets -- -D warnings && cargo fmt --check`
 Expected: `11 passed` (7 модели + 4 клиента).
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/
@@ -834,7 +834,7 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
   - `OauthClient { http, base, client_id, client_secret: Option<&str>, redirect_uri }` с `exchange(code, verifier, now_ms) -> Result<Tokens, GitlabError>` и `refresh(refresh_token, verifier, now_ms)`; `Tokens { access, refresh, expires_ms }`
   - `bearer(&mut Connection, &SecretBox, &reqwest::Client, &Store, now_ms) -> Result<String, GitlabError>` — токен для запросов; OAuth-токен, которому осталось < 5 мин, обновляется, новая пара сохраняется.
 
-- [ ] **Step 1: Написать падающие тесты**
+- [x] **Step 1: Написать падающие тесты**
 
 Модульные тесты в `src/sources/gitlab/oauth.rs` (добавить в конец файла):
 
@@ -964,7 +964,7 @@ async fn a_spent_refresh_token_asks_for_authorization() {
 Run: `cargo test sources::gitlab::oauth && cargo test --test gitlab_source`
 Expected: ошибки компиляции `cannot find function 'pkce_verifier'`.
 
-- [ ] **Step 2: Реализовать**
+- [x] **Step 2: Реализовать**
 
 Заменить `src/sources/gitlab/oauth.rs` целиком (тесты из шага 1 остаются в конце файла):
 
@@ -1146,12 +1146,12 @@ pub async fn bearer(conn: &mut Connection, secrets: &SecretBox, http: &reqwest::
 
 Если `store.put_setting(CONNECTION_KEY, &*conn)` не компилируется из-за живых заимствований `conn.auth`, перенести сохранение за пределы `match`: запомнить в `match` флаг «обновили» и `tokens.access`, а после `match` сохранить `conn`.
 
-- [ ] **Step 3: Запустить — проходит**
+- [x] **Step 3: Запустить — проходит**
 
 Run: `cargo test sources::gitlab && cargo test --test gitlab_source && cargo clippy --all-targets -- -D warnings && cargo fmt --check`
 Expected: `14 passed` в `sources::gitlab`, `3 passed` в `gitlab_source`.
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add src/ tests/
@@ -1174,7 +1174,7 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
   - `poller::{PollConfig { every, runners_every, stale_after, max_backoff } (Default: 3 s, 60 s, 10 s, 30 s), SourceState::{Disconnected, Ok, Failing, Reauthorize} (serde snake_case, Default Disconnected), GitlabStatus { state, last_ok_ms, last_error }, GitlabHandle { status: Arc<Mutex<GitlabStatus>>, reload: Arc<Notify> }, spawn(Store, SecretBox, reqwest::Client, mpsc::Sender<CiInput>, PollConfig) -> GitlabHandle}`
   - поведение: без подключения — ждёт `reload.notify_one()`; с подключением — раннеры, затем джобы; после `stale_after` сбоев подряд — `CiInput::SourceStale { source: "gitlab", since_ms: <последний успех или начало сбоев> }`, после восстановления — `SourceFresh`; отказ в доступе → `Reauthorize`, повтор раз в `max_backoff`; при переходе в «отключено» шлёт пустой `Jobs` (джобы уходят по сроку пропажи) и снимает «устарело».
 
-- [ ] **Step 1: Написать падающие тесты**
+- [x] **Step 1: Написать падающие тесты**
 
 Дописать в `tests/gitlab_source.rs`:
 
@@ -1291,7 +1291,7 @@ async fn disconnecting_empties_the_scene_and_clears_staleness() {
 Run: `cargo test --test gitlab_source`
 Expected: ошибки компиляции `could not find 'poller'`.
 
-- [ ] **Step 2: Реализовать**
+- [x] **Step 2: Реализовать**
 
 `src/sources/gitlab/poller.rs`:
 
@@ -1525,12 +1525,12 @@ pub mod poller;
 pub use poller::{spawn, GitlabHandle, GitlabStatus, PollConfig, SourceState};
 ```
 
-- [ ] **Step 3: Запустить — проходит**
+- [x] **Step 3: Запустить — проходит**
 
 Run: `cargo test --test gitlab_source && cargo clippy --all-targets -- -D warnings && cargo fmt --check`
 Expected: `7 passed`.
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add src/ tests/
@@ -1557,7 +1557,7 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
   - ошибки: 400 — неверный адрес, пустой токен, отказ GitLab, не администратор (`"<user> is not a GitLab administrator; …"`), нет публичного адреса для OAuth; 502 — GitLab недоступен или ответил странно; 503 — база.
   - публичный адрес lorvaq: `LORVAQ_PUBLIC_URL`, иначе `<X-Forwarded-Proto|http>://<Host>`; redirect URI = `<адрес>/api/v1/oauth/gitlab/callback`.
 
-- [ ] **Step 1: Написать падающие тесты**
+- [x] **Step 1: Написать падающие тесты**
 
 `tests/http_gitlab.rs`:
 
@@ -1680,7 +1680,7 @@ async fn gitlab_routes_need_the_admin() {
 Run: `cargo test --test http_gitlab`
 Expected: ошибки компиляции: нет поля `public_url` у `Live`.
 
-- [ ] **Step 2: Поля `Live` и маршруты**
+- [x] **Step 2: Поля `Live` и маршруты**
 
 В `src/http/mod.rs`:
 - добавить `mod sources;` к объявлениям модулей;
@@ -1946,12 +1946,12 @@ pub(super) async fn disconnect(State(s): State<Arc<AppState>>) -> Response {
 }
 ```
 
-- [ ] **Step 3: Запустить — проходит**
+- [x] **Step 3: Запустить — проходит**
 
 Run: `cargo test --test http_gitlab && cargo test && cargo clippy --all-targets -- -D warnings && cargo fmt --check`
 Expected: `4 passed` в `http_gitlab`, всё остальное зелёное.
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add src/ tests/
@@ -1971,7 +1971,7 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 - Consumes: `sources::gitlab::{spawn, PollConfig}`.
 - Produces: `World::stale() -> &BTreeMap<String, i64>`; `SceneHandle::stale() -> BTreeMap<String, i64>`; живой сервер запускает опрос GitLab в сцену CI; `CiScene::tick` убирает пустые места `runner:*` в `nohost`.
 
-- [ ] **Step 1: Написать падающие тесты**
+- [x] **Step 1: Написать падающие тесты**
 
 Дописать в модуль `tests` файла `src/scenes/ci/reduce.rs`:
 
@@ -2020,7 +2020,7 @@ async fn a_connected_gitlab_puts_its_jobs_on_the_scene() {
 Run: `cargo test scenes::ci && cargo test --test live_smoke`
 Expected: тест про строки раннеров падает (нет `RemovePlace`), смоук — не находит `job:42`.
 
-- [ ] **Step 2: Реализовать**
+- [x] **Step 2: Реализовать**
 
 В `src/scenes/ci/reduce.rs`, в `fn tick` у `impl Scene for CiScene`, перед последней строкой `out` добавить:
 
@@ -2071,12 +2071,12 @@ Expected: тест про строки раннеров падает (нет `Re
     live.public_url = public_url.map(|u| u.trim_end_matches('/').to_string()).filter(|u| !u.is_empty());
 ```
 
-- [ ] **Step 3: Запустить — всё проходит**
+- [x] **Step 3: Запустить — всё проходит**
 
 Run: `cargo test && cargo clippy --all-targets -- -D warnings && cargo fmt --check`
 Expected: всё зелёное, `live_smoke` — `3 passed`.
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add src/ tests/
@@ -2101,7 +2101,7 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
   - выход всегда снимает cookie, даже если база недоступна (сессия удаляется из кэша, предупреждение в лог).
   - `announce_setup_code` не перевыпускает код, если действующий уже есть.
 
-- [ ] **Step 1: Написать падающие тесты**
+- [x] **Step 1: Написать падающие тесты**
 
 Дописать в `tests/http_live.rs`:
 
@@ -2198,7 +2198,7 @@ async fn a_valid_setup_code_survives_a_restart() {
 Run: `cargo test`
 Expected: ошибки компиляции (`replace_admin_password`, `len`, `marks`, новая сигнатура `run_limited`), тест потока падает по таймауту.
 
-- [ ] **Step 2: Хранилище, ограничитель, код настройки**
+- [x] **Step 2: Хранилище, ограничитель, код настройки**
 
 В `src/store/mod.rs`, в `impl Store`:
 
@@ -2276,7 +2276,7 @@ pub async fn announce_setup_code(store: &Store, now_ms: i64) -> anyhow::Result<(
 
 Тест плана 2 `a_setup_code_is_announced_only_without_an_admin` остаётся зелёным: без кода он выпускается, при администраторе — нет.
 
-- [ ] **Step 3: Очередь argon2, выход, смена пароля, эпоха**
+- [x] **Step 3: Очередь argon2, выход, смена пароля, эпоха**
 
 В `src/http/mod.rs`:
 - в `struct Live` добавить:
@@ -2442,12 +2442,12 @@ pub(super) async fn logout(State(s): State<Arc<AppState>>, jar: CookieJar) -> Re
     Json(json!({ "ok": true })).into_response()
 ```
 
-- [ ] **Step 4: Запустить — всё проходит**
+- [x] **Step 4: Запустить — всё проходит**
 
 Run: `cargo test && cargo clippy --all-targets -- -D warnings && cargo fmt --check`
 Expected: всё зелёное, новые тесты проходят.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/ tests/
@@ -2467,7 +2467,7 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 **Interfaces:**
 - Produces: `Store::insert_events(scene, run: i64, events)` — повтор того же `(scene, run, seq)` ничего не добавляет; `history::HistorySink { store, run }` реализует `EventSink`; `spawn_writer` пишет с `run = now_ms()` на момент запуска.
 
-- [ ] **Step 1: Миграция**
+- [x] **Step 1: Миграция**
 
 `migrations/0002_event_runs.sql`:
 
@@ -2483,7 +2483,7 @@ CREATE UNIQUE INDEX events_scene_run_seq ON events (scene, run, seq);
 CREATE INDEX events_ts ON events (ts_ms);
 ```
 
-- [ ] **Step 2: Написать падающий тест**
+- [x] **Step 2: Написать падающий тест**
 
 В `tests/store.rs` в тесте `events_are_written_counted_and_pruned` заменить вызовы `s.insert_events("ci", …)` и `s.insert_events("other", …)` на `s.insert_events("ci", 1, …)` и `s.insert_events("other", 1, …)`, и дописать тест:
 
@@ -2503,7 +2503,7 @@ async fn a_batch_written_twice_keeps_one_copy() {
 Run: `cargo test --test store`
 Expected: ошибка компиляции — `insert_events` принимает 2 аргумента.
 
-- [ ] **Step 3: Реализовать**
+- [x] **Step 3: Реализовать**
 
 В `src/store/mod.rs` заменить `insert_events`:
 
@@ -2546,12 +2546,12 @@ impl EventSink for HistorySink {
 
 и в `spawn_writer` там, где `Writer` создаётся из `store`, передавать `HistorySink { store, run: now_ms() }` вместо `store` (`now_ms` уже импортирован из `crate::scene`).
 
-- [ ] **Step 4: Запустить — всё проходит**
+- [x] **Step 4: Запустить — всё проходит**
 
 Run: `cargo test && cargo clippy --all-targets -- -D warnings && cargo fmt --check`
 Expected: всё зелёное; `store` — на 1 тест больше, чем было.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add migrations/ src/ tests/
@@ -2574,7 +2574,7 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
   - `forms.ts`: `gitlabUrlProblem(url)`, `normalizeGitlabUrl(url)`, `tokenPageUrl(base)`, `oauthOutcome(hash) -> string | null` (текст по итогу из `#/settings?gitlab=…`).
   - раздел «GitLab» первым на странице настроек; App понимает `#/settings?…`; при недоступном сервере на старте App повторяет запрос раз в 3 с.
 
-- [ ] **Step 1: Написать падающие тесты**
+- [x] **Step 1: Написать падающие тесты**
 
 Дописать в `web/src/settings/forms.test.ts`:
 
@@ -2607,7 +2607,7 @@ describe("gitlab", () => {
 Run: `cd web && npm test`
 Expected: FAIL — нет экспортов `gitlabUrlProblem` и др.
 
-- [ ] **Step 2: Реализовать**
+- [x] **Step 2: Реализовать**
 
 Дописать в `web/src/i18n.ts` (в объект `t`, перед закрывающей `}`):
 
@@ -2831,12 +2831,12 @@ function GitlabSection({ onAuthLost }: Props) {
 .card a { color: var(--text); font-size: 13px; }
 ```
 
-- [ ] **Step 3: Тесты и сборка**
+- [x] **Step 3: Тесты и сборка**
 
 Run: `cd web && npm test && npm run build`
 Expected: все тесты зелёные (+3 в `forms.test.ts`), сборка без ошибок.
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add web/src/
@@ -2852,7 +2852,7 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 **Files:**
 - Modify: `compose.yml`, `README.md`
 
-- [ ] **Step 1: Файлы**
+- [x] **Step 1: Файлы**
 
 В `compose.yml`, у сервиса `lorvaq`, заменить блок портов на:
 
@@ -2902,7 +2902,7 @@ In the other modes, all sign-in attempts through a proxy share the proxy's
 address: a few wrong passwords lock sign-in for everyone for 15 minutes.
 ```
 
-- [ ] **Step 2: Проверить целиком**
+- [x] **Step 2: Проверить целиком**
 
 ```bash
 cargo test && cargo clippy --all-targets -- -D warnings && cargo fmt --check
@@ -2921,7 +2921,7 @@ Expected: всё зелёное, `clean`.
 5. Disconnect → джобы уходят со сцены за ~2 мин, баннера нет.
 6. Убрать стенд: `docker compose down -v`, удалить `.env`. Владельцу напомнить отозвать выданный для проверки токен.
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ```bash
 git add compose.yml README.md

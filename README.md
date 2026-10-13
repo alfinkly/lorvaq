@@ -5,8 +5,8 @@ lorvaq shows **things in places that move**: a CI job travels from the queue
 into a runner slot, its memory fills the slot, an OOM flashes red, a build flies
 off to the registry. You see not only *how much* but *why and where*.
 
-Status: early. This release runs the CI scene on a built-in simulator; GitLab,
-the runner agent, history and settings come next.
+Status: early. The CI scene runs on real GitLab jobs and runners, or on a
+built-in simulator; the runner agent (memory, disk, slots, OOM) comes next.
 
 ## Try it
 
@@ -44,6 +44,41 @@ mode other than `proxy`), every client arrives from the proxy's address, so all
 sign-in attempts share one allowance: a stranger who guesses wrong five times
 blocks the admin's sign-in for 15 minutes. In `proxy` mode lorvaq takes the client
 address from `X-Forwarded-For` when the request comes from a trusted proxy.
+
+## Connect GitLab
+
+lorvaq reads jobs and runners through GitLab's GraphQL API with the `read_api`
+scope. It needs a GitLab **administrator** to see the jobs of every runner; a
+dedicated service user is best, so the connection does not depend on a person.
+
+In Settings → GitLab, either:
+
+- **Authorize** — in GitLab create an application (Admin → Applications, or
+  User settings → Applications) with the redirect URI lorvaq shows and the
+  `read_api` scope, paste its Application ID and press Authorize. This needs
+  `LORVAQ_PUBLIC_URL`. Tokens are refreshed automatically.
+- **Paste a token** — the link opens GitLab's token page with the name and scope
+  filled in.
+
+Tokens are stored encrypted with `LORVAQ_SECRET_KEY`. lorvaq polls jobs every 3
+seconds and runners every minute. If GitLab stops answering, the scene shows a
+"data is old" banner after 10 seconds.
+
+GitLab with a certificate from a private CA is not supported yet.
+
+## Behind a reverse proxy
+
+Put https in front of lorvaq and set `LORVAQ_PUBLIC_URL` to its https address.
+
+To let your proxy decide who sees the scenes, choose "People your reverse proxy
+signed in" in Settings: name the header your proxy sets with the user name and
+list the proxy's addresses. lorvaq then trusts that header — and the client
+address in `X-Forwarded-For` for sign-in limits — only from those addresses.
+Anything that can reach lorvaq from a listed address can set them, so list only
+the proxy itself, not a whole network other services share.
+
+In the other modes, all sign-in attempts through a proxy share the proxy's
+address: a few wrong passwords lock sign-in for everyone for 15 minutes.
 
 ## Develop
 
