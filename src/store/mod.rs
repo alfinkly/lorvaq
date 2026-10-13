@@ -12,6 +12,15 @@ use std::time::Duration;
 
 static MIGRATOR: Migrator = sqlx::migrate!("./migrations");
 
+#[derive(Clone, Debug, PartialEq, Serialize, sqlx::FromRow)]
+pub struct AgentRow {
+    pub name: String,
+    pub created_ms: i64,
+    pub last_seen_ms: Option<i64>,
+    pub host: Option<String>,
+    pub version: Option<String>,
+}
+
 #[derive(Clone)]
 pub struct Store {
     pool: PgPool,
@@ -200,6 +209,68 @@ impl Store {
             .execute(&self.pool)
             .await?
             .rows_affected())
+    }
+
+    /// False when an agent with this name exists.
+    pub async fn create_agent(
+        &self,
+        name: &str,
+        token_hash: &str,
+        now_ms: i64,
+    ) -> anyhow::Result<bool> {
+        let done = sqlx::query(
+            "INSERT INTO agents (name, token_hash, created_ms) VALUES ($1, $2, $3) ON CONFLICT (name) DO NOTHING",
+        )
+        .bind(name)
+        .bind(token_hash)
+        .bind(now_ms)
+        .execute(&self.pool)
+        .await?;
+        Ok(done.rows_affected() == 1)
+    }
+
+    /// The agent a join token belongs to.
+    pub async fn agent_by_token(&self, token_hash: &str) -> anyhow::Result<Option<String>> {
+        Ok(
+            sqlx::query_scalar("SELECT name FROM agents WHERE token_hash = $1")
+                .bind(token_hash)
+                .fetch_optional(&self.pool)
+                .await?,
+        )
+    }
+
+    pub async fn agents(&self) -> anyhow::Result<Vec<AgentRow>> {
+        Ok(sqlx::query_as(
+            "SELECT name, created_ms, last_seen_ms, host, version FROM agents ORDER BY name",
+        )
+        .fetch_all(&self.pool)
+        .await?)
+    }
+
+    pub async fn touch_agent(
+        &self,
+        name: &str,
+        host: &str,
+        version: &str,
+        now_ms: i64,
+    ) -> anyhow::Result<()> {
+        sqlx::query("UPDATE agents SET last_seen_ms = $2, host = $3, version = $4 WHERE name = $1")
+            .bind(name)
+            .bind(now_ms)
+            .bind(host)
+            .bind(version)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    /// False when there was no such agent.
+    pub async fn delete_agent(&self, name: &str) -> anyhow::Result<bool> {
+        let done = sqlx::query("DELETE FROM agents WHERE name = $1")
+            .bind(name)
+            .execute(&self.pool)
+            .await?;
+        Ok(done.rows_affected() == 1)
     }
 
     pub async fn scene_settings(&self, scene: &str) -> anyhow::Result<Option<Value>> {

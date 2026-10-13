@@ -73,6 +73,7 @@ pub async fn live_state(
         tracing::warn!("LORVAQ_PUBLIC_URL is not an https URL, so the session cookie goes without the Secure flag; set it in production");
     }
     let http = crate::sources::gitlab::client::http_client();
+    let agents = Arc::new(crate::hub::Hub::new(ci_inputs.clone()));
     let gitlab = gitlab_source::spawn(
         store.clone(),
         secrets.clone(),
@@ -82,6 +83,7 @@ pub async fn live_state(
     );
     let mut live = Live::new(store, secrets, cookie_secure, access, history);
     live.gitlab = Some(gitlab);
+    live.agents = Some(agents);
     live.http = http;
     live.public_url = public_url
         .map(|u| u.trim_end_matches('/').to_string())

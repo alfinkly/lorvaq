@@ -46,7 +46,7 @@ fn live(s: &AppState) -> &Live {
         .expect("the admin guard lets only live requests in")
 }
 
-fn public_base(live: &Live, headers: &HeaderMap) -> Option<String> {
+pub(super) fn public_base(live: &Live, headers: &HeaderMap) -> Option<String> {
     if let Some(url) = &live.public_url {
         return Some(url.clone());
     }

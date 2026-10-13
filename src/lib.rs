@@ -6,6 +6,7 @@ pub mod crypto;
 pub mod demo;
 pub mod history;
 pub mod http;
+pub mod hub;
 pub mod scene;
 pub mod scenes;
 pub mod sources;

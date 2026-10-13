@@ -3,6 +3,7 @@
 
 mod account;
 mod admin;
+mod agents;
 mod guard;
 mod json;
 mod sessions;
@@ -21,7 +22,7 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::middleware;
 use axum::response::sse::{Event as SseEvent, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
-use axum::routing::{get, post};
+use axum::routing::{delete, get, post};
 use axum::{Json, Router};
 use futures::StreamExt;
 use serde::Deserialize;
@@ -61,6 +62,8 @@ pub struct Live {
     pub scene_write: tokio::sync::Mutex<()>,
     /// The GitLab poller, when a scene uses GitLab.
     pub gitlab: Option<crate::sources::gitlab::GitlabHandle>,
+    /// Connected agents, when a scene takes them.
+    pub agents: Option<Arc<crate::hub::Hub>>,
     /// LORVAQ_PUBLIC_URL without the trailing slash: OAuth sends the browser back here.
     pub public_url: Option<String>,
     /// For calls to GitLab.
@@ -90,6 +93,7 @@ impl Live {
             argon: Arc::new(Semaphore::new(ARGON_RUNS)),
             scene_write: tokio::sync::Mutex::new(()),
             gitlab: None,
+            agents: None,
             public_url: None,
             http: crate::sources::gitlab::client::http_client(),
             auth_epoch: tokio::sync::watch::channel(0).0,
@@ -133,6 +137,11 @@ pub fn router(state: Arc<AppState>) -> Router {
         )
         .route("/api/v1/admin/password", post(account::change_password))
         .route(
+            "/api/v1/admin/agents",
+            get(agents::list).post(agents::create),
+        )
+        .route("/api/v1/admin/agents/{name}", delete(agents::remove))
+        .route(
             "/api/v1/admin/sources/gitlab",
             get(sources::status).delete(sources::disconnect),
         )
@@ -151,6 +160,7 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/api/v1/setup", post(account::setup))
         .route("/api/v1/login", post(account::login))
         .route("/api/v1/logout", post(account::logout))
+        .route("/api/v1/agent/connect", get(agents::connect))
         .route(
             "/api/v1/oauth/gitlab/callback",
             get(sources::oauth_callback),
