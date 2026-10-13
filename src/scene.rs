@@ -67,6 +67,11 @@ impl SceneHandle {
         st.world.snapshot(st.seq)
     }
 
+    /// The sources whose data is old, without copying the whole world.
+    pub fn stale(&self) -> std::collections::BTreeMap<String, i64> {
+        self.state.read().expect(LOCK).world.stale().clone()
+    }
+
     /// Applies changes in order; the valid ones become events. Returns how many.
     pub fn commit(&self, changes: Vec<Change>, now_ms: i64) -> usize {
         let mut st = self.state.write().expect(LOCK);

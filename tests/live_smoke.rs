@@ -76,3 +76,33 @@ async fn broken_stored_settings_fall_back_to_defaults() {
     .unwrap();
     assert_eq!(state.scenes[0].settings()["exits"], json!([]));
 }
+
+#[tokio::test]
+async fn a_connected_gitlab_puts_its_jobs_on_the_scene() {
+    use lorvaq::sources::gitlab::fake::FakeGitlab;
+    use lorvaq::sources::gitlab::oauth::{Connection, StoredAuth, CONNECTION_KEY};
+    let store = common::store().await;
+    let fake = FakeGitlab::start().await;
+    fake.state.lock().unwrap().active = vec![FakeGitlab::job(42, "demo/backend", "PENDING", None)];
+    let secrets = SecretBox::from_base64(&SecretBox::generate_key()).unwrap();
+    let conn = Connection {
+        url: fake.url.clone(),
+        user: "dana".into(),
+        auth: StoredAuth::Token {
+            token: secrets.seal(b"good-token"),
+        },
+        connected_ms: 0,
+    };
+    store.put_setting(CONNECTION_KEY, &conn).await.unwrap();
+    let state = app::live_state(store, secrets, None).await.unwrap();
+    let ci = state.scenes[0].clone();
+    let mut seen = false;
+    for _ in 0..50 {
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        if ci.snapshot().entities.iter().any(|e| e.id == "job:42") {
+            seen = true;
+            break;
+        }
+    }
+    assert!(seen, "job 42 from GitLab reached the scene");
+}

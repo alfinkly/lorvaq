@@ -651,6 +651,15 @@ impl Scene for CiScene {
             self.projects.remove(&path);
             out.push(Change::RemovePlace { id });
         }
+        // Rows of runners without an agent exist only while they hold a job.
+        for row in world
+            .places()
+            .filter(|p| p.kind == "process" && p.parent.as_deref() == Some(NOHOST))
+        {
+            if !world.entities().any(|e| e.place == row.id) {
+                out.push(Change::RemovePlace { id: row.id.clone() });
+            }
+        }
         out
     }
 }
@@ -1243,6 +1252,36 @@ mod tests {
             h.scene.settings()["exits"][0]["label"],
             serde_json::json!("prod"),
             "old settings stay"
+        );
+    }
+
+    #[test]
+    fn empty_rows_of_runners_without_an_agent_go_away() {
+        let mut h = Harness::new(CiSettings::default());
+        h.feed(jobs(vec![running(1, "g/app", 7)], vec![]));
+        assert!(h.world.place("runner:7").is_some());
+        h.tick(0);
+        assert!(
+            h.world.place("runner:7").is_some(),
+            "kept while a job runs there"
+        );
+        h.feed(jobs(
+            vec![],
+            vec![JobInfo {
+                status: JobStatus::Success,
+                ..running(1, "g/app", 7)
+            }],
+        ));
+        assert!(
+            h.world.place("runner:7").is_some(),
+            "the finished job just left for the sink"
+        );
+        let ch = h.tick(0);
+        assert!(
+            ch.contains(&Change::RemovePlace {
+                id: "runner:7".into()
+            }),
+            "the empty row goes on the next tick: {ch:?}"
         );
     }
 }

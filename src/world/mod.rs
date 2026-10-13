@@ -179,6 +179,10 @@ impl World {
         }
     }
 
+    pub fn stale(&self) -> &BTreeMap<String, i64> {
+        &self.stale
+    }
+
     pub fn snapshot(&self, seq: u64) -> Snapshot {
         Snapshot {
             seq,

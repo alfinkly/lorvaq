@@ -6,6 +6,7 @@ mod admin;
 mod guard;
 mod json;
 mod sessions;
+mod sources;
 mod static_files;
 
 use crate::auth::{Access, LoginLimiter};
@@ -56,6 +57,12 @@ pub struct Live {
     pub argon: Arc<Semaphore>,
     /// One scene-settings write at a time: configure, store and revert must not interleave.
     pub scene_write: tokio::sync::Mutex<()>,
+    /// The GitLab poller, when a scene uses GitLab.
+    pub gitlab: Option<crate::sources::gitlab::GitlabHandle>,
+    /// LORVAQ_PUBLIC_URL without the trailing slash: OAuth sends the browser back here.
+    pub public_url: Option<String>,
+    /// For calls to GitLab.
+    pub http: reqwest::Client,
 }
 
 impl Live {
@@ -76,6 +83,9 @@ impl Live {
             sessions: Mutex::new(SessionCache::default()),
             argon: Arc::new(Semaphore::new(ARGON_RUNS)),
             scene_write: tokio::sync::Mutex::new(()),
+            gitlab: None,
+            public_url: None,
+            http: crate::sources::gitlab::client::http_client(),
         }
     }
 }
@@ -110,6 +120,18 @@ pub fn router(state: Arc<AppState>) -> Router {
             get(admin::get_scene).put(admin::put_scene),
         )
         .route("/api/v1/admin/password", post(account::change_password))
+        .route(
+            "/api/v1/admin/sources/gitlab",
+            get(sources::status).delete(sources::disconnect),
+        )
+        .route(
+            "/api/v1/admin/sources/gitlab/token",
+            post(sources::connect_token),
+        )
+        .route(
+            "/api/v1/admin/sources/gitlab/oauth",
+            post(sources::oauth_start),
+        )
         .route_layer(middleware::from_fn_with_state(state.clone(), guard::admin));
     Router::new()
         .route("/healthz", get(healthz))
@@ -117,6 +139,10 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/api/v1/setup", post(account::setup))
         .route("/api/v1/login", post(account::login))
         .route("/api/v1/logout", post(account::logout))
+        .route(
+            "/api/v1/oauth/gitlab/callback",
+            get(sources::oauth_callback),
+        )
         .merge(viewer)
         .merge(admin)
         .fallback(static_files::serve)
@@ -127,7 +153,7 @@ async fn healthz(State(s): State<Arc<AppState>>) -> Json<Value> {
     let scenes: Vec<Value> = s
         .scenes
         .iter()
-        .map(|h| json!({ "id": h.id, "stale": h.snapshot().stale }))
+        .map(|h| json!({ "id": h.id, "stale": h.stale() }))
         .collect();
     let db = match &s.live {
         Some(live) => json!(live.store.ping().await),

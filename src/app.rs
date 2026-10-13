@@ -6,14 +6,17 @@ use crate::crypto::SecretBox;
 use crate::history::{self, HistoryStatus};
 use crate::http::{router, AppState, Live};
 use crate::scene::{self, now_ms, SceneHandle};
+use crate::scenes::ci::input::CiInput;
 use crate::scenes::ci::settings::CiSettings;
 use crate::scenes::ci::CiScene;
+use crate::sources::gitlab::{self as gitlab_source, PollConfig};
 use crate::store::Store;
 use anyhow::Context;
 use futures::FutureExt;
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
+use tokio::sync::mpsc;
 
 /// Event streams never end on their own; after a stop signal they get this long.
 const STREAM_GRACE: Duration = Duration::from_secs(2);
@@ -26,7 +29,7 @@ pub fn demo_scenes() -> anyhow::Result<Vec<SceneHandle>> {
     Ok(vec![handle])
 }
 
-async fn live_scenes(store: &Store) -> anyhow::Result<Vec<SceneHandle>> {
+async fn live_scenes(store: &Store) -> anyhow::Result<(Vec<SceneHandle>, mpsc::Sender<CiInput>)> {
     let stored = store.scene_settings("ci").await?;
     let settings: CiSettings = match stored.map(serde_json::from_value) {
         Some(Ok(s)) => s,
@@ -40,9 +43,8 @@ async fn live_scenes(store: &Store) -> anyhow::Result<Vec<SceneHandle>> {
         tracing::warn!("stored CI settings are invalid ({e:#}); using defaults");
         CiScene::new(CiSettings::default())
     })?;
-    // Sources arrive with the next plans; until then the scene only ticks.
-    let (handle, _inputs) = scene::spawn(ci, Duration::from_secs(1));
-    Ok(vec![handle])
+    let (handle, inputs) = scene::spawn(ci, Duration::from_secs(1));
+    Ok((vec![handle], inputs))
 }
 
 /// Everything the live server needs, from an open store.
@@ -51,7 +53,7 @@ pub async fn live_state(
     secrets: SecretBox,
     public_url: Option<&str>,
 ) -> anyhow::Result<AppState> {
-    let scenes = live_scenes(&store).await?;
+    let (scenes, ci_inputs) = live_scenes(&store).await?;
     let history = scenes
         .iter()
         .map(|h| {
@@ -70,7 +72,20 @@ pub async fn live_state(
     if !cookie_secure {
         tracing::warn!("LORVAQ_PUBLIC_URL is not an https URL, so the session cookie goes without the Secure flag; set it in production");
     }
-    let live = Live::new(store, secrets, cookie_secure, access, history);
+    let http = crate::sources::gitlab::client::http_client();
+    let gitlab = gitlab_source::spawn(
+        store.clone(),
+        secrets.clone(),
+        http.clone(),
+        ci_inputs,
+        PollConfig::default(),
+    );
+    let mut live = Live::new(store, secrets, cookie_secure, access, history);
+    live.gitlab = Some(gitlab);
+    live.http = http;
+    live.public_url = public_url
+        .map(|u| u.trim_end_matches('/').to_string())
+        .filter(|u| !u.is_empty());
     Ok(AppState {
         scenes,
         live: Some(live),
