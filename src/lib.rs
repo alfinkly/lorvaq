@@ -7,5 +7,6 @@ pub mod history;
 pub mod http;
 pub mod scene;
 pub mod scenes;
+pub mod sources;
 pub mod store;
 pub mod world;
