@@ -98,7 +98,7 @@ async fn scene_settings_round_trip() {
 #[tokio::test]
 async fn events_are_written_counted_and_pruned() {
     let s = common::store().await;
-    s.insert_events("ci", &[]).await.unwrap();
+    s.insert_events("ci", 1, &[]).await.unwrap();
     let ev = |seq: u64, ts_ms: i64| Event {
         seq,
         ts_ms,
@@ -106,10 +106,10 @@ async fn events_are_written_counted_and_pruned() {
             id: format!("job:{seq}"),
         },
     };
-    s.insert_events("ci", &[ev(1, 100), ev(2, 200), ev(3, 300)])
+    s.insert_events("ci", 1, &[ev(1, 100), ev(2, 200), ev(3, 300)])
         .await
         .unwrap();
-    s.insert_events("other", &[ev(1, 100)]).await.unwrap();
+    s.insert_events("other", 1, &[ev(1, 100)]).await.unwrap();
     assert_eq!(s.event_count("ci").await.unwrap(), 3);
     assert_eq!(
         s.prune_events(250).await.unwrap(),
@@ -198,5 +198,26 @@ async fn a_valid_setup_code_survives_a_restart() {
             .await
             .unwrap(),
         "the code from reset-password still works"
+    );
+}
+
+#[tokio::test]
+async fn a_batch_written_twice_keeps_one_copy() {
+    let s = common::store().await;
+    let ev = |seq: u64| Event {
+        seq,
+        ts_ms: 10,
+        change: Change::Gone { id: "j".into() },
+    };
+    s.insert_events("ci", 5, &[ev(1), ev(2)]).await.unwrap();
+    s.insert_events("ci", 5, &[ev(1), ev(2), ev(3)])
+        .await
+        .unwrap();
+    assert_eq!(s.event_count("ci").await.unwrap(), 3);
+    s.insert_events("ci", 6, &[ev(1)]).await.unwrap();
+    assert_eq!(
+        s.event_count("ci").await.unwrap(),
+        4,
+        "a new run starts its seq again"
     );
 }

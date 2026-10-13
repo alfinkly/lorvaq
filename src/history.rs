@@ -56,9 +56,16 @@ pub trait EventSink: Send + Sync + 'static {
     ) -> impl Future<Output = anyhow::Result<()>> + Send;
 }
 
-impl EventSink for Store {
+/// The store, writing for one server run.
+#[derive(Clone)]
+pub struct HistorySink {
+    pub store: Store,
+    pub run: i64,
+}
+
+impl EventSink for HistorySink {
     async fn write(&self, scene: &str, events: &[Event]) -> anyhow::Result<()> {
-        self.insert_events(scene, events).await
+        self.store.insert_events(scene, self.run, events).await
     }
 }
 
@@ -174,7 +181,11 @@ pub fn spawn_writer(store: Store, scene: SceneHandle, status: Arc<Mutex<HistoryS
     // Subscribe first, then take what the bus already holds: the scene may
     // have published before these tasks started.
     let mut rx = scene.bus.subscribe();
-    let writer = Arc::new(Writer::new(store, scene.id, status));
+    let sink = HistorySink {
+        store,
+        run: now_ms(),
+    };
+    let writer = Arc::new(Writer::new(sink, scene.id, status));
     let mut written_up_to = 0;
     for ev in scene.bus.since(0).unwrap_or_default() {
         written_up_to = ev.seq;

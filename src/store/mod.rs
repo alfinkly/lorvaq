@@ -229,18 +229,26 @@ impl Store {
         Ok(())
     }
 
-    pub async fn insert_events(&self, scene: &str, events: &[Event]) -> anyhow::Result<()> {
+    /// Writes events of one server run; an event already stored for the run is skipped.
+    pub async fn insert_events(
+        &self,
+        scene: &str,
+        run: i64,
+        events: &[Event],
+    ) -> anyhow::Result<()> {
         if events.is_empty() {
             return Ok(());
         }
         let mut query =
-            QueryBuilder::<Postgres>::new("INSERT INTO events (scene, seq, ts_ms, change) ");
+            QueryBuilder::<Postgres>::new("INSERT INTO events (scene, run, seq, ts_ms, change) ");
         query.push_values(events, |mut row, ev| {
             row.push_bind(scene)
+                .push_bind(run)
                 .push_bind(ev.seq as i64)
                 .push_bind(ev.ts_ms)
                 .push_bind(serde_json::to_value(&ev.change).expect("changes always serialize"));
         });
+        query.push(" ON CONFLICT (scene, run, seq) DO NOTHING");
         query.build().execute(&self.pool).await?;
         Ok(())
     }
